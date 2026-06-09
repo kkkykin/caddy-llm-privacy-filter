@@ -1,4 +1,4 @@
-module github.com/packyme/caddy-llm-privacy-filter
+module github.com/kkkykin/caddy-llm-privacy-filter
 
 go 1.25.1
 

@@ -71,5 +71,5 @@ go build -o bin/caddy ./cmd/caddy
 With xcaddy from another checkout:
 
 ```bash
-xcaddy build --with github.com/packyme/caddy-llm-privacy-filter=.
+xcaddy build --with github.com/kkkykin/caddy-llm-privacy-filter=.
 ```
