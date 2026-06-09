@@ -1,0 +1,8 @@
+/bin/
+/result
+/dist/
+/tmp/
+/privacy-filter/
+*.test
+coverage.out
+
