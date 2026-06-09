@@ -40,6 +40,10 @@ type Handler struct {
 	// privacy-filter's built-in rules are used.
 	GitleaksTOML string `json:"gitleaks_toml,omitempty"`
 
+	// GitleaksTOMLs optionally points at multiple gitleaks-compatible TOML
+	// rules files. Rules are appended in order and matched as one filter.
+	GitleaksTOMLs []string `json:"gitleaks_tomls,omitempty"`
+
 	// GitleaksTOMLRefreshInterval controls periodic reloads for gitleaks_toml.
 	// URL sources refresh every hour by default. Local files refresh only when
 	// this is explicitly set.
@@ -82,13 +86,14 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	if h.GitleaksTOMLRefreshInterval < 0 {
 		return fmt.Errorf("gitleaks_toml_refresh_interval must be greater than or equal to 0")
 	}
+	gitleaksSources := h.gitleaksTOMLSources()
 
 	h.api = api
 	h.logger = ctx.Logger(h)
 
 	cancel, done, err := startFilterRefresh(
 		context.Background(),
-		h.GitleaksTOML,
+		gitleaksSources,
 		time.Duration(h.GitleaksTOMLRefreshInterval),
 		h.logger,
 		h.filter.Store,
@@ -208,12 +213,20 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 			case "gitleaks_toml":
-				if !d.NextArg() {
+				sources := d.RemainingArgs()
+				if len(sources) == 0 {
 					return d.ArgErr()
 				}
-				h.GitleaksTOML = d.Val()
-				if d.NextArg() {
+				for _, source := range sources {
+					h.addGitleaksTOML(source)
+				}
+			case "gitleaks_tomls":
+				sources := d.RemainingArgs()
+				if len(sources) == 0 {
 					return d.ArgErr()
+				}
+				for _, source := range sources {
+					h.addGitleaksTOML(source)
 				}
 			case "gitleaks_toml_refresh_interval":
 				if !d.NextArg() {
@@ -258,6 +271,27 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 		}
 	}
 	return nil
+}
+
+func (h *Handler) addGitleaksTOML(source string) {
+	if h.GitleaksTOML == "" && len(h.GitleaksTOMLs) == 0 {
+		h.GitleaksTOML = source
+		return
+	}
+	if h.GitleaksTOML != "" {
+		h.GitleaksTOMLs = append(h.GitleaksTOMLs, h.GitleaksTOML)
+		h.GitleaksTOML = ""
+	}
+	h.GitleaksTOMLs = append(h.GitleaksTOMLs, source)
+}
+
+func (h *Handler) gitleaksTOMLSources() []string {
+	sources := make([]string, 0, 1+len(h.GitleaksTOMLs))
+	if h.GitleaksTOML != "" {
+		sources = append(sources, h.GitleaksTOML)
+	}
+	sources = append(sources, h.GitleaksTOMLs...)
+	return compactGitleaksSources(sources)
 }
 
 func shouldInspect(r *http.Request) bool {

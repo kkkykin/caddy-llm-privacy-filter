@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,6 +30,54 @@ func TestLoadPrivacyFilterFromURL(t *testing.T) {
 	}
 }
 
+func TestLoadPrivacyFilterMergesSources(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.toml")
+	second := filepath.Join(dir, "second.toml")
+	if err := os.WriteFile(first, []byte(gitleaksRuleTOML("first-secret", "FIRSTSECRET[0-9]+", "FIRSTSECRET")), 0o600); err != nil {
+		t.Fatalf("write first toml: %v", err)
+	}
+	if err := os.WriteFile(second, []byte(gitleaksRuleTOML("second-secret", "SECONDSECRET[0-9]+", "SECONDSECRET")), 0o600); err != nil {
+		t.Fatalf("write second toml: %v", err)
+	}
+
+	filter, err := loadPrivacyFilterSources(context.Background(), []string{first, second})
+	if err != nil {
+		t.Fatalf("load privacy filter sources: %v", err)
+	}
+	if res := filter.Redact("value FIRSTSECRET123"); !res.Hit {
+		t.Fatalf("expected first rule to redact, got %+v", res)
+	}
+	if res := filter.Redact("value SECONDSECRET123"); !res.Hit {
+		t.Fatalf("expected second rule to redact, got %+v", res)
+	}
+}
+
+func TestLoadPrivacyFilterMergesURLAndLocalSource(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(gitleaksRuleTOML("url-secret", "URLSECRET[0-9]+", "URLSECRET")))
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	local := filepath.Join(dir, "local.toml")
+	if err := os.WriteFile(local, []byte(gitleaksRuleTOML("local-secret", "LOCALSECRET[0-9]+", "LOCALSECRET")), 0o600); err != nil {
+		t.Fatalf("write local toml: %v", err)
+	}
+
+	filter, err := loadPrivacyFilterSources(context.Background(), []string{server.URL, local})
+	if err != nil {
+		t.Fatalf("load privacy filter sources: %v", err)
+	}
+	if res := filter.Redact("value URLSECRET123"); !res.Hit {
+		t.Fatalf("expected URL rule to redact, got %+v", res)
+	}
+	if res := filter.Redact("value LOCALSECRET123"); !res.Hit {
+		t.Fatalf("expected local rule to redact, got %+v", res)
+	}
+}
+
 func TestStartFilterRefreshReplacesURLRules(t *testing.T) {
 	var toml atomic.Value
 	toml.Store(gitleaksRuleTOML("first-secret", "FIRSTSECRET[0-9]+", "FIRSTSECRET"))
@@ -39,7 +89,7 @@ func TestStartFilterRefreshReplacesURLRules(t *testing.T) {
 	defer server.Close()
 
 	store := filterStore{}
-	cancel, done, err := startFilterRefresh(context.Background(), server.URL, 10*time.Millisecond, zap.NewNop(), store.Store)
+	cancel, done, err := startFilterRefresh(context.Background(), []string{server.URL}, 10*time.Millisecond, zap.NewNop(), store.Store)
 	if err != nil {
 		t.Fatalf("start filter refresh: %v", err)
 	}

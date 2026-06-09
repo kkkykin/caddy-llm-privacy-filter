@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -129,5 +130,25 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 	}
 	if !h.FailOpen {
 		t.Fatal("FailOpen = false")
+	}
+}
+
+func TestUnmarshalCaddyfileMultipleGitleaksTOML(t *testing.T) {
+	d := caddyfile.NewTestDispenser(`llm_privacy_filter {
+		gitleaks_toml /etc/caddy/base.toml /etc/caddy/team.toml
+		gitleaks_toml https://example.com/shared.toml
+	}`)
+	var h Handler
+
+	if err := h.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("unmarshal Caddyfile: %v", err)
+	}
+	want := []string{
+		"/etc/caddy/base.toml",
+		"/etc/caddy/team.toml",
+		"https://example.com/shared.toml",
+	}
+	if got := h.gitleaksTOMLSources(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("gitleaks sources = %#v, want %#v", got, want)
 	}
 }

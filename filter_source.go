@@ -1,6 +1,7 @@
 package llmprivacyfilter
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"go.uber.org/zap"
 	pf "privacyfilter/filter"
 )
@@ -28,22 +30,23 @@ func (s *filterStore) Store(f *pf.Filter) {
 	s.ptr.Store(f)
 }
 
-func startFilterRefresh(ctx context.Context, source string, interval time.Duration, logger *zap.Logger, store func(*pf.Filter)) (context.CancelFunc, chan struct{}, error) {
+func startFilterRefresh(ctx context.Context, sources []string, interval time.Duration, logger *zap.Logger, store func(*pf.Filter)) (context.CancelFunc, chan struct{}, error) {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
+	sources = compactGitleaksSources(sources)
 
-	filter, err := loadPrivacyFilter(ctx, source)
+	filter, err := loadPrivacyFilterSources(ctx, sources)
 	if err != nil {
 		return nil, nil, err
 	}
 	store(filter)
 
-	if source == "" {
+	if len(sources) == 0 {
 		return stoppedRefresh()
 	}
 	if interval == 0 {
-		if isHTTPURL(source) {
+		if hasHTTPURL(sources) {
 			interval = defaultGitleaksTOMLRefreshInterval
 		} else {
 			return stoppedRefresh()
@@ -63,19 +66,18 @@ func startFilterRefresh(ctx context.Context, source string, interval time.Durati
 			case <-refreshCtx.Done():
 				return
 			case <-ticker.C:
-				filter, err := loadPrivacyFilter(refreshCtx, source)
+				filter, err := loadPrivacyFilterSources(refreshCtx, sources)
 				if err != nil {
 					logger.Warn("failed to refresh gitleaks_toml; keeping previous privacy filter rules",
-						zap.String("source", source),
-						zap.Error(err))
+						append(gitleaksSourceFields(sources), zap.Error(err))...)
 					continue
 				}
 				store(filter)
 				rules, skipped := filter.Stats()
 				logger.Info("refreshed gitleaks_toml privacy filter rules",
-					zap.String("source", source),
-					zap.Int("rules", rules),
-					zap.Int("skipped_rules", skipped))
+					append(gitleaksSourceFields(sources),
+						zap.Int("rules", rules),
+						zap.Int("skipped_rules", skipped))...)
 			}
 		}
 	}()
@@ -95,6 +97,22 @@ func loadPrivacyFilter(ctx context.Context, source string) (*pf.Filter, error) {
 	}
 
 	body, err := fetchGitleaksTOML(ctx, source)
+	if err != nil {
+		return nil, err
+	}
+	return newFilterFromTOMLBytes(body)
+}
+
+func loadPrivacyFilterSources(ctx context.Context, sources []string) (*pf.Filter, error) {
+	sources = compactGitleaksSources(sources)
+	switch len(sources) {
+	case 0:
+		return pf.New("")
+	case 1:
+		return loadPrivacyFilter(ctx, sources[0])
+	}
+
+	body, err := mergeGitleaksTOML(ctx, sources)
 	if err != nil {
 		return nil, err
 	}
@@ -128,6 +146,56 @@ func fetchGitleaksTOML(ctx context.Context, source string) ([]byte, error) {
 	return body, nil
 }
 
+type gitleaksTOMLConfig struct {
+	Rules []gitleaksTOMLRule `toml:"rules"`
+}
+
+type gitleaksTOMLRule struct {
+	ID          string   `toml:"id"`
+	Regex       string   `toml:"regex"`
+	Keywords    []string `toml:"keywords"`
+	Entropy     float64  `toml:"entropy"`
+	SecretGroup int      `toml:"secretGroup"`
+}
+
+func mergeGitleaksTOML(ctx context.Context, sources []string) ([]byte, error) {
+	var merged gitleaksTOMLConfig
+	for _, source := range sources {
+		body, err := readGitleaksTOML(ctx, source)
+		if err != nil {
+			return nil, fmt.Errorf("load gitleaks_toml %q: %w", source, err)
+		}
+
+		var cfg gitleaksTOMLConfig
+		if _, err := toml.Decode(string(body), &cfg); err != nil {
+			return nil, fmt.Errorf("decode gitleaks_toml %q: %w", source, err)
+		}
+		merged.Rules = append(merged.Rules, cfg.Rules...)
+	}
+
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(merged); err != nil {
+		return nil, fmt.Errorf("encode merged gitleaks_toml: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+func readGitleaksTOML(ctx context.Context, source string) ([]byte, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	if isHTTPURL(source) {
+		return fetchGitleaksTOML(ctx, source)
+	}
+	body, err := os.ReadFile(source)
+	if err != nil {
+		return nil, fmt.Errorf("read gitleaks_toml: %w", err)
+	}
+	return body, nil
+}
+
 func newFilterFromTOMLBytes(body []byte) (*pf.Filter, error) {
 	tmp, err := os.CreateTemp("", "caddy-llm-privacy-filter-gitleaks-*.toml")
 	if err != nil {
@@ -153,4 +221,33 @@ func isHTTPURL(source string) bool {
 		return false
 	}
 	return u.Scheme == "http" || u.Scheme == "https"
+}
+
+func hasHTTPURL(sources []string) bool {
+	for _, source := range sources {
+		if isHTTPURL(source) {
+			return true
+		}
+	}
+	return false
+}
+
+func compactGitleaksSources(sources []string) []string {
+	if len(sources) == 0 {
+		return nil
+	}
+	compact := make([]string, 0, len(sources))
+	for _, source := range sources {
+		if source != "" {
+			compact = append(compact, source)
+		}
+	}
+	return compact
+}
+
+func gitleaksSourceFields(sources []string) []zap.Field {
+	if len(sources) == 1 {
+		return []zap.Field{zap.String("source", sources[0])}
+	}
+	return []zap.Field{zap.Strings("sources", sources)}
 }

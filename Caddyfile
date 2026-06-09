@@ -18,7 +18,8 @@
 	route /v1/* {
 		llm_privacy_filter {
 			api auto
-			# gitleaks_toml https://example.com/gitleaks.toml
+			# gitleaks_toml /etc/caddy/base-gitleaks.toml /etc/caddy/team-gitleaks.toml
+			# gitleaks_toml https://example.com/shared-gitleaks.toml
 			# gitleaks_toml_refresh_interval 1h
 			max_body_size 8388608
 			fail_open false

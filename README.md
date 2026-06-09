@@ -28,7 +28,8 @@ The flake shell provides Go, Caddy, xcaddy, gopls, gotools, jq, and git.
 	route /v1/* {
 		llm_privacy_filter {
 			api auto
-			# gitleaks_toml https://example.com/gitleaks.toml
+			# gitleaks_toml /etc/caddy/base-gitleaks.toml /etc/caddy/team-gitleaks.toml
+			# gitleaks_toml https://example.com/shared-gitleaks.toml
 			# gitleaks_toml_refresh_interval 1h
 			max_body_size 8388608
 			fail_open false
@@ -54,8 +55,9 @@ Messages are forwarded unchanged.
 | Option | Default | Description |
 | --- | --- | --- |
 | `api` | `auto` | One of `auto`, `openai`, `openai-compatible`, `responses`, `anthropic-message`. |
-| `gitleaks_toml` | empty | Optional local path or HTTP(S) URL to a gitleaks-compatible rules file. Empty uses privacy-filter built-ins. |
-| `gitleaks_toml_refresh_interval` | `1h` for URL, off for local path | Periodically reload `gitleaks_toml`. Refresh failures keep the previous compiled rules. |
+| `gitleaks_toml` | empty | Optional local path or HTTP(S) URL to a gitleaks-compatible rules file. Repeat it or pass multiple paths on one line to merge rule sets. Empty uses privacy-filter built-ins. |
+| `gitleaks_tomls` | empty | Array/alias form for multiple gitleaks-compatible rules files. Rules are appended in order and matched as one filter. |
+| `gitleaks_toml_refresh_interval` | `1h` when any URL is configured, off for local-only sources | Periodically reload configured gitleaks TOML sources. Refresh failures keep the previous compiled rules. |
 | `max_body_size` | `8388608` | Largest JSON body to buffer, in bytes. Use `-1` for no explicit limit. |
 | `fail_open` | `false` | Forward the original body when filtering fails. |
 

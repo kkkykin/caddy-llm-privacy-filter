@@ -3,6 +3,7 @@ module github.com/kkkykin/caddy-llm-privacy-filter
 go 1.25.1
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/caddyserver/caddy/v2 v2.11.4
 	go.uber.org/zap v1.28.0
 	privacyfilter v0.0.0-20260529054237-a760b336729c
@@ -17,7 +18,6 @@ require (
 	filippo.io/bigmod v0.1.0 // indirect
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/AndreasBriese/bbloom v0.0.0-20190825152654-46b345b51c96 // indirect
-	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/DeRuina/timberjack v1.4.2 // indirect
 	github.com/KimMachineGun/automemlimit v0.7.5 // indirect
 	github.com/Masterminds/goutils v1.1.1 // indirect
