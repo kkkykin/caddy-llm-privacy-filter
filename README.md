@@ -28,6 +28,8 @@ The flake shell provides Go, Caddy, xcaddy, gopls, gotools, jq, and git.
 	route /v1/* {
 		llm_privacy_filter {
 			api auto
+			# gitleaks_toml https://example.com/gitleaks.toml
+			# gitleaks_toml_refresh_interval 1h
 			max_body_size 8388608
 			fail_open false
 		}
@@ -43,12 +45,17 @@ The directive is fail-closed by default. If the JSON body cannot be inspected,
 Caddy returns an error instead of forwarding the original sensitive body. Set
 `fail_open true` only when availability is more important than privacy.
 
+When `api auto` is used, the module detects the interface from the JSON body
+shape only. Bodies that do not match OpenAI-compatible, Responses, or Anthropic
+Messages are forwarded unchanged.
+
 ## Options
 
 | Option | Default | Description |
 | --- | --- | --- |
 | `api` | `auto` | One of `auto`, `openai`, `openai-compatible`, `responses`, `anthropic-message`. |
-| `gitleaks_toml` | empty | Optional path to a gitleaks-compatible rules file. Empty uses privacy-filter built-ins. |
+| `gitleaks_toml` | empty | Optional local path or HTTP(S) URL to a gitleaks-compatible rules file. Empty uses privacy-filter built-ins. |
+| `gitleaks_toml_refresh_interval` | `1h` for URL, off for local path | Periodically reload `gitleaks_toml`. Refresh failures keep the previous compiled rules. |
 | `max_body_size` | `8388608` | Largest JSON body to buffer, in bytes. Use `-1` for no explicit limit. |
 | `fail_open` | `false` | Forward the original body when filtering fails. |
 
@@ -66,4 +73,3 @@ With xcaddy from another checkout:
 ```bash
 xcaddy build --with github.com/packyme/caddy-llm-privacy-filter=.
 ```
-

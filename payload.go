@@ -47,7 +47,7 @@ func parseAPIMode(v string) (apiMode, error) {
 	}
 }
 
-func (pr payloadRedactor) RedactJSON(body []byte, mode apiMode, path string) ([]byte, RedactSummary, error) {
+func (pr payloadRedactor) RedactJSON(body []byte, mode apiMode) ([]byte, RedactSummary, error) {
 	var doc any
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
@@ -59,7 +59,7 @@ func (pr payloadRedactor) RedactJSON(body []byte, mode apiMode, path string) ([]
 	}
 
 	summary := RedactSummary{}
-	pr.redactForMode(doc, mode, path, &summary)
+	pr.redactForMode(doc, mode, &summary)
 	if !summary.Changed {
 		return body, summary, nil
 	}
@@ -71,16 +71,11 @@ func (pr payloadRedactor) RedactJSON(body []byte, mode apiMode, path string) ([]
 	return out, summary, nil
 }
 
-func (pr payloadRedactor) redactForMode(doc any, mode apiMode, path string, summary *RedactSummary) {
+func (pr payloadRedactor) redactForMode(doc any, mode apiMode, summary *RedactSummary) {
 	if mode == apiAuto {
-		detected := detectAPIMode(path, doc)
-		if detected != apiAuto {
-			pr.redactForMode(doc, detected, path, summary)
-			return
+		if detected := detectAPIMode(doc); detected != apiAuto {
+			pr.redactForMode(doc, detected, summary)
 		}
-		pr.redactOpenAI(doc, summary)
-		pr.redactResponses(doc, summary)
-		pr.redactAnthropic(doc, summary)
 		return
 	}
 
@@ -94,34 +89,114 @@ func (pr payloadRedactor) redactForMode(doc any, mode apiMode, path string, summ
 	}
 }
 
-func detectAPIMode(path string, doc any) apiMode {
-	p := strings.ToLower(path)
-	switch {
-	case strings.Contains(p, "/responses"):
-		return apiResponses
-	case strings.Contains(p, "/chat/completions"), strings.Contains(p, "/completions"), strings.Contains(p, "/embeddings"):
-		return apiOpenAI
-	case strings.Contains(p, "/messages"):
-		return apiAnthropic
-	}
-
+func detectAPIMode(doc any) apiMode {
 	root, ok := doc.(map[string]any)
 	if !ok {
 		return apiAuto
 	}
-	if _, hasInput := root["input"]; hasInput {
+	if matchesResponsesBody(root) {
 		return apiResponses
 	}
-	if _, hasMessages := root["messages"]; hasMessages {
-		if _, hasSystem := root["system"]; hasSystem {
-			return apiAnthropic
-		}
-		return apiOpenAI
+	if matchesAnthropicBody(root) {
+		return apiAnthropic
 	}
-	if _, hasPrompt := root["prompt"]; hasPrompt {
+	if matchesOpenAIBody(root) {
 		return apiOpenAI
 	}
 	return apiAuto
+}
+
+func matchesResponsesBody(root map[string]any) bool {
+	if _, hasInput := root["input"]; !hasInput {
+		return false
+	}
+	if _, hasMessages := root["messages"]; hasMessages {
+		return false
+	}
+	if !hasStringField(root, "model") {
+		return false
+	}
+	return true
+}
+
+func matchesAnthropicBody(root map[string]any) bool {
+	messages, hasMessages := root["messages"]
+	if !hasMessages || !messageArrayLooksLike(messages) {
+		return false
+	}
+
+	if model, ok := root["model"].(string); ok && strings.HasPrefix(strings.ToLower(model), "claude") {
+		return true
+	}
+	if _, hasMaxTokens := root["max_tokens"]; !hasMaxTokens {
+		return false
+	}
+	if _, hasSystem := root["system"]; hasSystem {
+		return true
+	}
+	return containsAnthropicContentBlock(messages)
+}
+
+func matchesOpenAIBody(root map[string]any) bool {
+	if !hasStringField(root, "model") {
+		return false
+	}
+	if _, hasPrompt := root["prompt"]; hasPrompt {
+		return true
+	}
+	if messages, hasMessages := root["messages"]; hasMessages {
+		return messageArrayLooksLike(messages)
+	}
+	return false
+}
+
+func hasStringField(root map[string]any, key string) bool {
+	v, ok := root[key].(string)
+	return ok && strings.TrimSpace(v) != ""
+}
+
+func messageArrayLooksLike(v any) bool {
+	items, ok := v.([]any)
+	if !ok || len(items) == 0 {
+		return false
+	}
+	for _, item := range items {
+		msg, ok := item.(map[string]any)
+		if !ok {
+			return false
+		}
+		if _, ok := msg["role"].(string); !ok {
+			return false
+		}
+		if _, ok := msg["content"]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func containsAnthropicContentBlock(v any) bool {
+	switch x := v.(type) {
+	case []any:
+		for _, item := range x {
+			if containsAnthropicContentBlock(item) {
+				return true
+			}
+		}
+	case map[string]any:
+		if typ, ok := x["type"].(string); ok {
+			switch typ {
+			case "tool_use", "tool_result":
+				return true
+			}
+		}
+		for _, val := range x {
+			if containsAnthropicContentBlock(val) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (pr payloadRedactor) redactOpenAI(doc any, summary *RedactSummary) {

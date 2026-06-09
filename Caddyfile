@@ -1,0 +1,34 @@
+{
+	auto_https off
+	debug
+}
+
+:8881 {
+	respond "aaa"
+}
+
+:8880 {
+	log {
+		output stdout
+		format console
+	}
+
+	respond /healthz "ok\n" 200
+
+	route /v1/* {
+		llm_privacy_filter {
+			api auto
+			# gitleaks_toml https://example.com/gitleaks.toml
+			# gitleaks_toml_refresh_interval 1h
+			max_body_size 8388608
+			fail_open false
+		}
+
+		reverse_proxy http://127.0.0.1:8881
+		# reverse_proxy http://127.0.0.1:8881 {
+		# 	transport http {
+		# 		network_proxy url http://127.0.0.1:8080
+		# 	}
+		# }
+	}
+}

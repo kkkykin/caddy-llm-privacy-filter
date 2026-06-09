@@ -34,12 +34,12 @@ func TestHandlerRedactsAndForwardsBody(t *testing.T) {
 	}
 	h := &Handler{
 		api:         apiAuto,
-		filter:      f,
 		logger:      zap.NewNop(),
 		MaxBodySize: defaultMaxBodySize,
 	}
+	h.filter.Store(f)
 	next := &captureNext{}
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"messages":[{"role":"user","content":"a@example.com"}]}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-compatible","messages":[{"role":"user","content":"a@example.com"}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 
@@ -61,10 +61,10 @@ func TestHandlerSkipsNonJSON(t *testing.T) {
 	}
 	h := &Handler{
 		api:         apiAuto,
-		filter:      f,
 		logger:      zap.NewNop(),
 		MaxBodySize: defaultMaxBodySize,
 	}
+	h.filter.Store(f)
 	next := &captureNext{}
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("a@example.com"))
 	req.Header.Set("Content-Type", "text/plain")
@@ -78,9 +78,35 @@ func TestHandlerSkipsNonJSON(t *testing.T) {
 	}
 }
 
+func TestHandlerAutoPassesThroughUnknownJSONBody(t *testing.T) {
+	f, err := pf.New("")
+	if err != nil {
+		t.Fatalf("new filter: %v", err)
+	}
+	h := &Handler{
+		api:         apiAuto,
+		logger:      zap.NewNop(),
+		MaxBodySize: defaultMaxBodySize,
+	}
+	h.filter.Store(f)
+	next := &captureNext{}
+	body := `{"text":"a@example.com"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	if err := h.ServeHTTP(rr, req, caddyhttp.HandlerFunc(next.ServeHTTP)); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	if next.body != body {
+		t.Fatalf("expected unknown JSON body to pass through unchanged, got %s", next.body)
+	}
+}
+
 func TestUnmarshalCaddyfile(t *testing.T) {
 	d := caddyfile.NewTestDispenser(`llm_privacy_filter responses {
 		gitleaks_toml /etc/caddy/gitleaks.toml
+		gitleaks_toml_refresh_interval 5m
 		max_body_size 42
 		fail_open true
 	}`)
@@ -94,6 +120,9 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 	}
 	if h.GitleaksTOML != "/etc/caddy/gitleaks.toml" {
 		t.Fatalf("GitleaksTOML = %q", h.GitleaksTOML)
+	}
+	if h.GitleaksTOMLRefreshInterval == 0 {
+		t.Fatal("GitleaksTOMLRefreshInterval = 0")
 	}
 	if h.MaxBodySize != 42 {
 		t.Fatalf("MaxBodySize = %d", h.MaxBodySize)

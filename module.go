@@ -2,6 +2,7 @@ package llmprivacyfilter
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,16 +10,17 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
-	pf "privacyfilter/filter"
 )
 
 const defaultMaxBodySize int64 = 8 << 20
+const defaultGitleaksTOMLRefreshInterval = time.Hour
 
 func init() {
 	caddy.RegisterModule(Handler{})
@@ -34,8 +36,14 @@ type Handler struct {
 	API string `json:"api,omitempty"`
 
 	// GitleaksTOML optionally points at a gitleaks-compatible TOML rules file.
-	// When empty, privacy-filter's built-in rules are used.
+	// It may be a local file path or an HTTP(S) URL. When empty,
+	// privacy-filter's built-in rules are used.
 	GitleaksTOML string `json:"gitleaks_toml,omitempty"`
+
+	// GitleaksTOMLRefreshInterval controls periodic reloads for gitleaks_toml.
+	// URL sources refresh every hour by default. Local files refresh only when
+	// this is explicitly set.
+	GitleaksTOMLRefreshInterval caddy.Duration `json:"gitleaks_toml_refresh_interval,omitempty"`
 
 	// MaxBodySize is the largest JSON body to buffer and redact, in bytes.
 	// The default is 8 MiB. Set to -1 for no explicit limit.
@@ -46,8 +54,11 @@ type Handler struct {
 	FailOpen bool `json:"fail_open,omitempty"`
 
 	api    apiMode
-	filter *pf.Filter
+	filter filterStore
 	logger *zap.Logger
+
+	rulesRefreshCancel context.CancelFunc
+	rulesRefreshDone   chan struct{}
 }
 
 func (Handler) CaddyModule() caddy.ModuleInfo {
@@ -68,15 +79,25 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	if h.MaxBodySize < -1 {
 		return fmt.Errorf("max_body_size must be -1 or greater")
 	}
-
-	f, err := pf.New(h.GitleaksTOML)
-	if err != nil {
-		return fmt.Errorf("load privacy filter: %w", err)
+	if h.GitleaksTOMLRefreshInterval < 0 {
+		return fmt.Errorf("gitleaks_toml_refresh_interval must be greater than or equal to 0")
 	}
 
 	h.api = api
-	h.filter = f
 	h.logger = ctx.Logger(h)
+
+	cancel, done, err := startFilterRefresh(
+		context.Background(),
+		h.GitleaksTOML,
+		time.Duration(h.GitleaksTOMLRefreshInterval),
+		h.logger,
+		h.filter.Store,
+	)
+	if err != nil {
+		return fmt.Errorf("load privacy filter: %w", err)
+	}
+	h.rulesRefreshCancel = cancel
+	h.rulesRefreshDone = done
 	return nil
 }
 
@@ -87,11 +108,15 @@ func (h *Handler) Validate() error {
 	if h.MaxBodySize < -1 {
 		return fmt.Errorf("max_body_size must be -1 or greater")
 	}
+	if h.GitleaksTOMLRefreshInterval < 0 {
+		return fmt.Errorf("gitleaks_toml_refresh_interval must be greater than or equal to 0")
+	}
 	return nil
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
-	if h.filter == nil {
+	filter := h.filter.Load()
+	if filter == nil {
 		return caddyhttp.Error(http.StatusInternalServerError, errors.New("llm_privacy_filter is not provisioned"))
 	}
 	if !shouldInspect(r) {
@@ -133,7 +158,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	}
 	_ = originalBody.Close()
 
-	redacted, summary, err := newPayloadRedactor(h.filter).RedactJSON(body, h.api, r.URL.Path)
+	redacted, summary, err := newPayloadRedactor(filter).RedactJSON(body, h.api)
 	if err != nil {
 		return h.handleFailure(w, r, next, body, http.StatusBadRequest, err)
 	}
@@ -144,6 +169,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		resetBody(r, body)
 	}
 	return next.ServeHTTP(w, r)
+}
+
+func (h *Handler) Cleanup() error {
+	if h.rulesRefreshCancel != nil {
+		h.rulesRefreshCancel()
+	}
+	if h.rulesRefreshDone != nil {
+		<-h.rulesRefreshDone
+	}
+	return nil
 }
 
 func parseCaddyfile(helper httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
@@ -177,6 +212,18 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				h.GitleaksTOML = d.Val()
+				if d.NextArg() {
+					return d.ArgErr()
+				}
+			case "gitleaks_toml_refresh_interval":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				dur, err := caddy.ParseDuration(d.Val())
+				if err != nil {
+					return d.Errf("invalid gitleaks_toml_refresh_interval: %v", err)
+				}
+				h.GitleaksTOMLRefreshInterval = caddy.Duration(dur)
 				if d.NextArg() {
 					return d.ArgErr()
 				}
@@ -309,6 +356,7 @@ func (h *Handler) logFailure(msg string, err error) {
 var (
 	_ caddy.Provisioner           = (*Handler)(nil)
 	_ caddy.Validator             = (*Handler)(nil)
+	_ caddy.CleanerUpper          = (*Handler)(nil)
 	_ caddyfile.Unmarshaler       = (*Handler)(nil)
 	_ caddyhttp.MiddlewareHandler = (*Handler)(nil)
 )

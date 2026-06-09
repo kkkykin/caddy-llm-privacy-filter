@@ -28,7 +28,7 @@ func TestRedactOpenAICompatibleChat(t *testing.T) {
 		]
 	}`)
 
-	out, summary, err := redactor.RedactJSON(body, apiOpenAI, "/v1/chat/completions")
+	out, summary, err := redactor.RedactJSON(body, apiOpenAI)
 	if err != nil {
 		t.Fatalf("redact JSON: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestRedactResponsesAPI(t *testing.T) {
 		]
 	}`)
 
-	out, summary, err := redactor.RedactJSON(body, apiResponses, "/v1/responses")
+	out, summary, err := redactor.RedactJSON(body, apiResponses)
 	if err != nil {
 		t.Fatalf("redact JSON: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestRedactAnthropicMessages(t *testing.T) {
 		]
 	}`)
 
-	out, summary, err := redactor.RedactJSON(body, apiAnthropic, "/v1/messages")
+	out, summary, err := redactor.RedactJSON(body, apiAnthropic)
 	if err != nil {
 		t.Fatalf("redact JSON: %v", err)
 	}
@@ -101,22 +101,51 @@ func TestRedactAnthropicMessages(t *testing.T) {
 	}
 }
 
-func TestAutoDetectByPath(t *testing.T) {
-	if got := detectAPIMode("/v1/responses", map[string]any{}); got != apiResponses {
-		t.Fatalf("responses path detected as %s", got)
+func TestAutoDetectByBody(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want apiMode
+	}{
+		{
+			name: "responses",
+			body: `{"model":"gpt-4.1","input":"email a@example.com"}`,
+			want: apiResponses,
+		},
+		{
+			name: "openai compatible",
+			body: `{"model":"gpt-compatible","messages":[{"role":"user","content":"email a@example.com"}]}`,
+			want: apiOpenAI,
+		},
+		{
+			name: "anthropic",
+			body: `{"model":"claude-3-5-sonnet","max_tokens":64,"messages":[{"role":"user","content":"email a@example.com"}]}`,
+			want: apiAnthropic,
+		},
+		{
+			name: "unknown",
+			body: `{"text":"email a@example.com"}`,
+			want: apiAuto,
+		},
 	}
-	if got := detectAPIMode("/v1/chat/completions", map[string]any{}); got != apiOpenAI {
-		t.Fatalf("chat completions path detected as %s", got)
-	}
-	if got := detectAPIMode("/v1/messages", map[string]any{}); got != apiAnthropic {
-		t.Fatalf("messages path detected as %s", got)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var doc any
+			if err := json.Unmarshal([]byte(tt.body), &doc); err != nil {
+				t.Fatalf("unmarshal body: %v", err)
+			}
+			if got := detectAPIMode(doc); got != tt.want {
+				t.Fatalf("detectAPIMode = %s, want %s", got, tt.want)
+			}
+		})
 	}
 }
 
 func TestRedactedJSONRemainsValid(t *testing.T) {
 	redactor := newTestRedactor(t)
-	body := []byte(`{"messages":[{"role":"user","content":"a@example.com"}]}`)
-	out, summary, err := redactor.RedactJSON(body, apiAuto, "/v1/chat/completions")
+	body := []byte(`{"model":"gpt-compatible","messages":[{"role":"user","content":"a@example.com"}]}`)
+	out, summary, err := redactor.RedactJSON(body, apiAuto)
 	if err != nil {
 		t.Fatalf("redact JSON: %v", err)
 	}
@@ -126,5 +155,20 @@ func TestRedactedJSONRemainsValid(t *testing.T) {
 	var decoded map[string]any
 	if err := json.Unmarshal(out, &decoded); err != nil {
 		t.Fatalf("redacted output is invalid JSON: %v", err)
+	}
+}
+
+func TestAutoPassesThroughUnknownBody(t *testing.T) {
+	redactor := newTestRedactor(t)
+	body := []byte(`{"text":"a@example.com"}`)
+	out, summary, err := redactor.RedactJSON(body, apiAuto)
+	if err != nil {
+		t.Fatalf("redact JSON: %v", err)
+	}
+	if summary.Changed {
+		t.Fatalf("unexpected redaction summary: %+v", summary)
+	}
+	if string(out) != string(body) {
+		t.Fatalf("expected passthrough body %s, got %s", body, out)
 	}
 }
