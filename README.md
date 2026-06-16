@@ -57,9 +57,9 @@ Messages are forwarded unchanged.
 | `api` | `auto` | One of `auto`, `openai`, `openai-compatible`, `responses`, `anthropic-message`. |
 | `gitleaks_toml` | empty | Optional local path or HTTP(S) URL to a gitleaks-compatible rules file. Repeat it or pass multiple paths on one line to merge rule sets. Empty uses privacy-filter built-ins. |
 | `gitleaks_tomls` | empty | Array/alias form for multiple gitleaks-compatible rules files. Rules are appended in order and matched as one filter. |
-| `gitleaks_toml_refresh_interval` | `1h` when any URL is configured, off for local-only sources | Periodically reload configured gitleaks TOML sources. Refresh failures keep the previous compiled rules. |
+| `gitleaks_toml_refresh_interval` | `1h` when any URL is configured, off for local-only sources | Periodically reload configured gitleaks TOML sources. Refresh failures keep the previous compiled rules. See `fail_open` for startup load-failure behavior. |
 | `max_body_size` | `8388608` | Largest JSON body to buffer, in bytes. Use `-1` for no explicit limit. |
-| `fail_open` | `false` | Forward the original body when filtering fails. |
+| `fail_open` | `false` | Forward the original body when filtering fails. Also governs startup load failures: when every configured `gitleaks_toml` source is a URL, `true` falls back to built-in rules and keeps serving while `false` aborts startup. A local source that fails to load always aborts startup regardless of this setting. |
 
 ## Build A Custom Caddy
 

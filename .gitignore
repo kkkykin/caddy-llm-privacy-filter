@@ -3,6 +3,7 @@
 /dist/
 /tmp/
 /privacy-filter/
+/.snow/
 *.test
 coverage.out
 

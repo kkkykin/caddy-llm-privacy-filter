@@ -95,6 +95,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		context.Background(),
 		gitleaksSources,
 		time.Duration(h.GitleaksTOMLRefreshInterval),
+		h.FailOpen,
 		h.logger,
 		h.filter.Store,
 	)

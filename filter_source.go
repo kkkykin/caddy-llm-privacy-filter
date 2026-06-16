@@ -30,7 +30,7 @@ func (s *filterStore) Store(f *pf.Filter) {
 	s.ptr.Store(f)
 }
 
-func startFilterRefresh(ctx context.Context, sources []string, interval time.Duration, logger *zap.Logger, store func(*pf.Filter)) (context.CancelFunc, chan struct{}, error) {
+func startFilterRefresh(ctx context.Context, sources []string, interval time.Duration, failOpen bool, logger *zap.Logger, store func(*pf.Filter)) (context.CancelFunc, chan struct{}, error) {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -38,7 +38,20 @@ func startFilterRefresh(ctx context.Context, sources []string, interval time.Dur
 
 	filter, err := loadPrivacyFilterSources(ctx, sources)
 	if err != nil {
-		return nil, nil, err
+		// Only network (URL) sources may degrade to built-in rules, and only
+		// when fail_open is set. A local source must fail fast so a bad path or
+		// malformed file surfaces at startup instead of silently weakening the
+		// active rules. A mixed set is treated as non-degradable for the same
+		// reason: falling back would also drop the local rules.
+		if !failOpen || !allHTTPURLs(sources) {
+			return nil, nil, err
+		}
+		logger.Warn("failed to load gitleaks_toml from URL source(s); fail_open is set, falling back to built-in privacy filter rules",
+			append(gitleaksSourceFields(sources), zap.Error(err))...)
+		filter, err = pf.New("")
+		if err != nil {
+			return nil, nil, fmt.Errorf("fallback to built-in rules: %w", err)
+		}
 	}
 	store(filter)
 
@@ -230,6 +243,18 @@ func hasHTTPURL(sources []string) bool {
 		}
 	}
 	return false
+}
+
+func allHTTPURLs(sources []string) bool {
+	if len(sources) == 0 {
+		return false
+	}
+	for _, source := range sources {
+		if !isHTTPURL(source) {
+			return false
+		}
+	}
+	return true
 }
 
 func compactGitleaksSources(sources []string) []string {

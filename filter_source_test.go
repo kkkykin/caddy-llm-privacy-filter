@@ -89,7 +89,7 @@ func TestStartFilterRefreshReplacesURLRules(t *testing.T) {
 	defer server.Close()
 
 	store := filterStore{}
-	cancel, done, err := startFilterRefresh(context.Background(), []string{server.URL}, 10*time.Millisecond, zap.NewNop(), store.Store)
+	cancel, done, err := startFilterRefresh(context.Background(), []string{server.URL}, 10*time.Millisecond, false, zap.NewNop(), store.Store)
 	if err != nil {
 		t.Fatalf("start filter refresh: %v", err)
 	}
@@ -116,6 +116,74 @@ func TestStartFilterRefreshReplacesURLRules(t *testing.T) {
 				return
 			}
 		}
+	}
+}
+
+func TestStartFilterRefreshURLFailureFallsBackWhenFailOpen(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	store := filterStore{}
+	cancel, done, err := startFilterRefresh(context.Background(), []string{server.URL}, time.Hour, true, zap.NewNop(), store.Store)
+	if err != nil {
+		t.Fatalf("expected fallback to built-in rules, got error: %v", err)
+	}
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	if store.Load() == nil {
+		t.Fatal("expected built-in filter to be stored after fallback")
+	}
+}
+
+func TestStartFilterRefreshURLFailureFailsClosed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	store := filterStore{}
+	cancel, done, err := startFilterRefresh(context.Background(), []string{server.URL}, time.Hour, false, zap.NewNop(), store.Store)
+	if err == nil {
+		cancel()
+		<-done
+		t.Fatal("expected startup to fail when a URL source fails and fail_open is false")
+	}
+}
+
+func TestStartFilterRefreshLocalFailureNeverDegrades(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist.toml")
+
+	store := filterStore{}
+	cancel, done, err := startFilterRefresh(context.Background(), []string{missing}, 0, true, zap.NewNop(), store.Store)
+	if err == nil {
+		cancel()
+		<-done
+		t.Fatal("expected startup to fail for a missing local source even with fail_open")
+	}
+}
+
+func TestStartFilterRefreshMixedFailureNeverDegrades(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	local := filepath.Join(t.TempDir(), "local.toml")
+	if err := os.WriteFile(local, []byte(gitleaksRuleTOML("local-secret", "LOCALSECRET[0-9]+", "LOCALSECRET")), 0o600); err != nil {
+		t.Fatalf("write local toml: %v", err)
+	}
+
+	store := filterStore{}
+	cancel, done, err := startFilterRefresh(context.Background(), []string{server.URL, local}, time.Hour, true, zap.NewNop(), store.Store)
+	if err == nil {
+		cancel()
+		<-done
+		t.Fatal("expected startup to fail for a mixed source set even with fail_open")
 	}
 }
 
