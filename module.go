@@ -23,7 +23,7 @@ const defaultMaxBodySize int64 = 8 << 20
 const defaultGitleaksTOMLRefreshInterval = time.Hour
 
 func init() {
-	caddy.RegisterModule(Handler{})
+	caddy.RegisterModule(new(Handler))
 	httpcaddyfile.RegisterHandlerDirective("llm_privacy_filter", parseCaddyfile)
 }
 
@@ -65,7 +65,7 @@ type Handler struct {
 	rulesRefreshDone   chan struct{}
 }
 
-func (Handler) CaddyModule() caddy.ModuleInfo {
+func (*Handler) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "http.handlers.llm_privacy_filter",
 		New: func() caddy.Module { return new(Handler) },
