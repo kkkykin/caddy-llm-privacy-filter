@@ -1,7 +1,10 @@
 package llmprivacyfilter
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -14,7 +17,114 @@ func newTestRedactor(t *testing.T) payloadRedactor {
 	if err != nil {
 		t.Fatalf("new filter: %v", err)
 	}
-	return newPayloadRedactor(f)
+	return newPayloadRedactor(f, nil)
+}
+
+func TestSkipRegexSkipsRedaction(t *testing.T) {
+	f, err := pf.New("")
+	if err != nil {
+		t.Fatalf("new filter: %v", err)
+	}
+	tokenPattern := regexp.MustCompile(`myapp_[A-Za-z0-9]{32}`)
+	var token string
+	var unprotected string
+	for attempt := 0; attempt < 100; attempt++ {
+		randomBytes := make([]byte, 24)
+		if _, err := rand.Read(randomBytes); err != nil {
+			t.Fatalf("generate high-entropy token: %v", err)
+		}
+		token = "myapp_" + base64.StdEncoding.EncodeToString(randomBytes)[:32]
+		if !tokenPattern.MatchString(token) {
+			continue
+		}
+		unprotected = f.Redact(token).Redacted
+		if unprotected == "[密钥]" {
+			break
+		}
+	}
+	if unprotected != "[密钥]" {
+		t.Fatalf("unprotected high-entropy token was not redacted as a key: %q -> %q", token, unprotected)
+	}
+
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`a@example[.]com`),
+		tokenPattern,
+	}
+	redactor := newPayloadRedactor(f, patterns)
+	body := []byte(`{"model":"gpt-compatible","messages":[{"role":"user","content":"keep a@example.com and ` + token + `, redact b@example.com"}]}`)
+
+	out, summary, err := redactor.RedactJSON(body, apiOpenAI)
+	if err != nil {
+		t.Fatalf("redact JSON: %v", err)
+	}
+	text := string(out)
+	if !summary.Changed || summary.Entities != 1 {
+		t.Fatalf("expected one non-protected redaction, got %+v in %s", summary, text)
+	}
+	if !strings.Contains(text, "a@example.com") || !strings.Contains(text, token) {
+		t.Fatalf("skip_regex fragments were changed: %s", text)
+	}
+	if strings.Contains(text, "b@example.com") || !strings.Contains(text, "[邮箱]") {
+		t.Fatalf("non-protected email was not redacted: %s", text)
+	}
+}
+
+func TestSkipRegexProtectsSRIHashAlongsideEmail(t *testing.T) {
+	f, err := pf.New("")
+	if err != nil {
+		t.Fatalf("new filter: %v", err)
+	}
+
+	var sri string
+	var unprotected string
+	for attempt := 0; attempt < 100; attempt++ {
+		digest := make([]byte, 32)
+		if _, err := rand.Read(digest); err != nil {
+			t.Fatalf("generate SRI digest: %v", err)
+		}
+		sri = "sha256-" + base64.StdEncoding.EncodeToString(digest)
+		unprotected = f.Redact(sri).Redacted
+		if unprotected == "[密钥]" {
+			break
+		}
+	}
+	if unprotected != "[密钥]" {
+		t.Fatalf("unprotected SRI hash was not redacted as a key: %q", unprotected)
+	}
+
+	redactor := newPayloadRedactor(f, []*regexp.Regexp{
+		regexp.MustCompile(`sha256-[A-Za-z0-9+/]{43}=`),
+	})
+	body := []byte(`{"model":"gpt-compatible","messages":[{"role":"user","content":"` + sri + ` and owner@example.com"}]}`)
+
+	out, summary, err := redactor.RedactJSON(body, apiOpenAI)
+	if err != nil {
+		t.Fatalf("redact JSON: %v", err)
+	}
+	text := string(out)
+	if !summary.Changed || summary.Entities != 1 {
+		t.Fatalf("expected only the email to be redacted, got %+v in %s", summary, text)
+	}
+	if !strings.Contains(text, sri+" and [邮箱]") {
+		t.Fatalf("SRI hash was not preserved beside the redacted email: %s", text)
+	}
+	if strings.Contains(text, "owner@example.com") {
+		t.Fatalf("email was not redacted: %s", text)
+	}
+}
+
+func TestMergeSpans(t *testing.T) {
+	spans := [][2]int{{8, 12}, {1, 5}, {3, 9}, {12, 14}, {20, 24}, {21, 23}}
+	want := [][2]int{{1, 12}, {12, 14}, {20, 24}}
+	got := mergeSpans(spans)
+	if len(got) != len(want) {
+		t.Fatalf("mergeSpans = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("mergeSpans = %#v, want %#v", got, want)
+		}
+	}
 }
 
 func TestRedactOpenAICompatibleChat(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -57,9 +58,15 @@ type Handler struct {
 	// inspected. The default is fail-closed.
 	FailOpen bool `json:"fail_open,omitempty"`
 
+	// SkipRegex contains regular expressions for string fragments that should
+	// be preserved without redaction. Patterns are compiled during Provision.
+	SkipRegex []string `json:"skip_regex,omitempty"`
+
 	api    apiMode
 	filter filterStore
 	logger *zap.Logger
+
+	skipPatterns []*regexp.Regexp
 
 	rulesRefreshCancel context.CancelFunc
 	rulesRefreshDone   chan struct{}
@@ -86,9 +93,14 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	if h.GitleaksTOMLRefreshInterval < 0 {
 		return fmt.Errorf("gitleaks_toml_refresh_interval must be greater than or equal to 0")
 	}
+	skipPatterns, err := compileSkipPatterns(h.SkipRegex)
+	if err != nil {
+		return err
+	}
 	gitleaksSources := h.gitleaksTOMLSources()
 
 	h.api = api
+	h.skipPatterns = skipPatterns
 	h.logger = ctx.Logger(h)
 
 	cancel, done, err := startFilterRefresh(
@@ -116,6 +128,9 @@ func (h *Handler) Validate() error {
 	}
 	if h.GitleaksTOMLRefreshInterval < 0 {
 		return fmt.Errorf("gitleaks_toml_refresh_interval must be greater than or equal to 0")
+	}
+	if _, err := compileSkipPatterns(h.SkipRegex); err != nil {
+		return err
 	}
 	return nil
 }
@@ -164,7 +179,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	}
 	_ = originalBody.Close()
 
-	redacted, summary, err := newPayloadRedactor(filter).RedactJSON(body, h.api)
+	redacted, summary, err := newPayloadRedactor(filter, h.skipPatterns).RedactJSON(body, h.api)
 	if err != nil {
 		return h.handleFailure(w, r, next, body, http.StatusBadRequest, err)
 	}
@@ -266,12 +281,35 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				} else {
 					h.FailOpen = true
 				}
+			case "skip_regex":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				h.SkipRegex = append(h.SkipRegex, d.Val())
+				if d.NextArg() {
+					return d.ArgErr()
+				}
 			default:
 				return d.Errf("unrecognized subdirective %q", d.Val())
 			}
 		}
 	}
 	return nil
+}
+
+func compileSkipPatterns(patterns []string) ([]*regexp.Regexp, error) {
+	if len(patterns) == 0 {
+		return nil, nil
+	}
+	compiled := make([]*regexp.Regexp, 0, len(patterns))
+	for i, pattern := range patterns {
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("invalid skip_regex pattern %d %q: %w", i+1, pattern, err)
+		}
+		compiled = append(compiled, re)
+	}
+	return compiled, nil
 }
 
 func (h *Handler) addGitleaksTOML(source string) {
