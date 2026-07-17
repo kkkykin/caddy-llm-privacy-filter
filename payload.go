@@ -8,8 +8,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-
-	pf "privacyfilter/filter"
 )
 
 type apiMode string
@@ -27,11 +25,11 @@ type RedactSummary struct {
 }
 
 type payloadRedactor struct {
-	filter       *pf.Filter
+	filter       *GitleaksFilter
 	skipPatterns []*regexp.Regexp
 }
 
-func newPayloadRedactor(f *pf.Filter, skipPatterns []*regexp.Regexp) payloadRedactor {
+func newPayloadRedactor(f *GitleaksFilter, skipPatterns []*regexp.Regexp) payloadRedactor {
 	return payloadRedactor{filter: f, skipPatterns: skipPatterns}
 }
 
@@ -407,7 +405,7 @@ func (pr payloadRedactor) redactString(s string, summary *RedactSummary) string 
 		}
 	}
 	if len(protected) == 0 {
-		res := pr.filter.Redact(s)
+		res := pr.filter.RedactString(s)
 		if !res.Hit {
 			return s
 		}
@@ -424,7 +422,7 @@ func (pr payloadRedactor) redactString(s string, summary *RedactSummary) string 
 		}
 	}
 
-	res := pr.filter.Redact(string(masked))
+	res := pr.filter.RedactString(string(masked))
 	if !res.Hit {
 		return s
 	}

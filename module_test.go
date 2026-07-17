@@ -11,7 +11,6 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
-	pf "privacyfilter/filter"
 )
 
 type captureNext struct {
@@ -29,7 +28,7 @@ func (n *captureNext) ServeHTTP(w http.ResponseWriter, r *http.Request) error {
 }
 
 func TestHandlerRedactsAndForwardsBody(t *testing.T) {
-	f, err := pf.New("")
+	f, err := NewGitleaksFilter(nil)
 	if err != nil {
 		t.Fatalf("new filter: %v", err)
 	}
@@ -56,7 +55,7 @@ func TestHandlerRedactsAndForwardsBody(t *testing.T) {
 }
 
 func TestHandlerSkipsNonJSON(t *testing.T) {
-	f, err := pf.New("")
+	f, err := NewGitleaksFilter(nil)
 	if err != nil {
 		t.Fatalf("new filter: %v", err)
 	}
@@ -80,7 +79,7 @@ func TestHandlerSkipsNonJSON(t *testing.T) {
 }
 
 func TestHandlerAutoPassesThroughUnknownJSONBody(t *testing.T) {
-	f, err := pf.New("")
+	f, err := NewGitleaksFilter(nil)
 	if err != nil {
 		t.Fatalf("new filter: %v", err)
 	}

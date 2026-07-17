@@ -37,8 +37,8 @@ type Handler struct {
 	API string `json:"api,omitempty"`
 
 	// GitleaksTOML optionally points at a gitleaks-compatible TOML rules file.
-	// It may be a local file path or an HTTP(S) URL. When empty,
-	// privacy-filter's built-in rules are used.
+	// It may be a local file path or an HTTP(S) URL. Custom rules extend the
+	// embedded gitleaks defaults and built-in PII rules.
 	GitleaksTOML string `json:"gitleaks_toml,omitempty"`
 
 	// GitleaksTOMLs optionally points at multiple gitleaks-compatible TOML

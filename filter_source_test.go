@@ -25,7 +25,7 @@ func TestLoadPrivacyFilterFromURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load privacy filter: %v", err)
 	}
-	if res := filter.Redact("value TESTSECRET123"); !res.Hit {
+	if res := filter.RedactString("value TESTSECRET123"); !res.Hit {
 		t.Fatalf("expected URL rule to redact, got %+v", res)
 	}
 }
@@ -45,10 +45,10 @@ func TestLoadPrivacyFilterMergesSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load privacy filter sources: %v", err)
 	}
-	if res := filter.Redact("value FIRSTSECRET123"); !res.Hit {
+	if res := filter.RedactString("value FIRSTSECRET123"); !res.Hit {
 		t.Fatalf("expected first rule to redact, got %+v", res)
 	}
-	if res := filter.Redact("value SECONDSECRET123"); !res.Hit {
+	if res := filter.RedactString("value SECONDSECRET123"); !res.Hit {
 		t.Fatalf("expected second rule to redact, got %+v", res)
 	}
 }
@@ -70,10 +70,10 @@ func TestLoadPrivacyFilterMergesURLAndLocalSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load privacy filter sources: %v", err)
 	}
-	if res := filter.Redact("value URLSECRET123"); !res.Hit {
+	if res := filter.RedactString("value URLSECRET123"); !res.Hit {
 		t.Fatalf("expected URL rule to redact, got %+v", res)
 	}
-	if res := filter.Redact("value LOCALSECRET123"); !res.Hit {
+	if res := filter.RedactString("value LOCALSECRET123"); !res.Hit {
 		t.Fatalf("expected local rule to redact, got %+v", res)
 	}
 }
@@ -98,7 +98,7 @@ func TestStartFilterRefreshReplacesURLRules(t *testing.T) {
 		<-done
 	}()
 
-	if res := store.Load().Redact("value FIRSTSECRET123"); !res.Hit {
+	if res := store.Load().RedactString("value FIRSTSECRET123"); !res.Hit {
 		t.Fatalf("expected initial URL rule to redact, got %+v", res)
 	}
 
@@ -112,7 +112,7 @@ func TestStartFilterRefreshReplacesURLRules(t *testing.T) {
 		case <-deadline:
 			t.Fatal("timed out waiting for refreshed URL rule")
 		case <-tick.C:
-			if res := store.Load().Redact("value SECONDSECRET123"); res.Hit {
+			if res := store.Load().RedactString("value SECONDSECRET123"); res.Hit {
 				return
 			}
 		}

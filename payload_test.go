@@ -7,8 +7,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-
-	pf "privacyfilter/filter"
 )
 
 var (
@@ -20,7 +18,7 @@ const benchmarkSRIHash = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
 
 func newTestRedactor(t *testing.T) payloadRedactor {
 	t.Helper()
-	f, err := pf.New("")
+	f, err := NewGitleaksFilter(nil)
 	if err != nil {
 		t.Fatalf("new filter: %v", err)
 	}
@@ -28,7 +26,7 @@ func newTestRedactor(t *testing.T) payloadRedactor {
 }
 
 func BenchmarkRedactString(b *testing.B) {
-	f, err := pf.New("")
+	f, err := NewGitleaksFilter(nil)
 	if err != nil {
 		b.Fatalf("new filter: %v", err)
 	}
@@ -165,7 +163,7 @@ func benchmarkOpenAIChatBody(content string) []byte {
 }
 
 func TestSkipRegexSkipsRedaction(t *testing.T) {
-	f, err := pf.New("")
+	f, err := NewGitleaksFilter(nil)
 	if err != nil {
 		t.Fatalf("new filter: %v", err)
 	}
@@ -181,7 +179,7 @@ func TestSkipRegexSkipsRedaction(t *testing.T) {
 		if !tokenPattern.MatchString(token) {
 			continue
 		}
-		unprotected = f.Redact(token).Redacted
+		unprotected = f.RedactString(token).Redacted
 		if unprotected == "[密钥]" {
 			break
 		}
@@ -214,7 +212,7 @@ func TestSkipRegexSkipsRedaction(t *testing.T) {
 }
 
 func TestSkipRegexProtectsSRIHashAlongsideEmail(t *testing.T) {
-	f, err := pf.New("")
+	f, err := NewGitleaksFilter(nil)
 	if err != nil {
 		t.Fatalf("new filter: %v", err)
 	}
@@ -227,7 +225,7 @@ func TestSkipRegexProtectsSRIHashAlongsideEmail(t *testing.T) {
 			t.Fatalf("generate SRI digest: %v", err)
 		}
 		sri = "sha256-" + base64.StdEncoding.EncodeToString(digest)
-		unprotected = f.Redact(sri).Redacted
+		unprotected = f.RedactString(sri).Redacted
 		if unprotected == "[密钥]" {
 			break
 		}
@@ -276,7 +274,7 @@ func TestRedactOpenAICompatibleChat(t *testing.T) {
 	body := []byte(`{
 		"model":"gpt-compatible",
 		"messages":[
-			{"role":"system","content":"不要泄露 token sk-proj-abcdefghijklmnopqrstuvwxyz"},
+			{"role":"system","content":"不要泄露 token sk-proj-vW8qN4mZ2cR7tY9pL5xK3dH6sF1aB0uE"},
 			{"role":"user","content":[{"type":"text","text":"邮箱 a@example.com，电话 13800138000"}]},
 			{"role":"assistant","tool_calls":[{"type":"function","function":{"name":"lookup","arguments":"{\"email\":\"b@example.com\"}"}}]}
 		]
@@ -290,7 +288,7 @@ func TestRedactOpenAICompatibleChat(t *testing.T) {
 		t.Fatalf("expected redactions, got %+v in %s", summary, out)
 	}
 	text := string(out)
-	for _, sensitive := range []string{"a@example.com", "13800138000", "b@example.com", "sk-proj-abcdefghijklmnopqrstuvwxyz"} {
+	for _, sensitive := range []string{"a@example.com", "13800138000", "b@example.com", "sk-proj-vW8qN4mZ2cR7tY9pL5xK3dH6sF1aB0uE"} {
 		if strings.Contains(text, sensitive) {
 			t.Fatalf("sensitive value %q remained in %s", sensitive, text)
 		}

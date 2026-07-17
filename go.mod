@@ -5,8 +5,8 @@ go 1.25.1
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/caddyserver/caddy/v2 v2.11.4
+	github.com/zricethezav/gitleaks/v8 v8.30.1
 	go.uber.org/zap v1.28.0
-	privacyfilter v0.0.0-20260529054237-a760b336729c
 )
 
 require (
@@ -163,7 +163,6 @@ require (
 	github.com/yuin/goldmark v1.8.2 // indirect
 	github.com/yuin/goldmark-highlighting/v2 v2.0.0-20230729083705-37449abec8cc // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
-	github.com/zricethezav/gitleaks/v8 v8.30.1 // indirect
 	go.etcd.io/bbolt v1.4.3 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/bridges/prometheus v0.68.0 // indirect
@@ -222,5 +221,3 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	howett.net/plist v1.0.0 // indirect
 )
-
-replace privacyfilter => github.com/packyme/privacy-filter v0.0.0-20260529054237-a760b336729c
