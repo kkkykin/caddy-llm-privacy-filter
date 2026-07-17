@@ -25,7 +25,7 @@ func TestGitleaksFilterRedactBytes(t *testing.T) {
 		"[redacted:pii-email]",
 		"[redacted:pii-phone-cn]",
 		"[redacted:pii-ipv4]",
-		"[redacted:privacy-openai-key]",
+		"[redacted:privacy-high-entropy]",
 	} {
 		if !strings.Contains(text, label) {
 			t.Fatalf("label %q missing from %q", label, text)
