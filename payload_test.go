@@ -11,6 +11,13 @@ import (
 	pf "privacyfilter/filter"
 )
 
+var (
+	benchmarkRedactedString string
+	benchmarkRegexMatches   [][]int
+)
+
+const benchmarkSRIHash = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
+
 func newTestRedactor(t *testing.T) payloadRedactor {
 	t.Helper()
 	f, err := pf.New("")
@@ -18,6 +25,143 @@ func newTestRedactor(t *testing.T) payloadRedactor {
 		t.Fatalf("new filter: %v", err)
 	}
 	return newPayloadRedactor(f, nil)
+}
+
+func BenchmarkRedactString(b *testing.B) {
+	f, err := pf.New("")
+	if err != nil {
+		b.Fatalf("new filter: %v", err)
+	}
+
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`sha256-[A-Za-z0-9+/]{43}=`),
+		regexp.MustCompile(`myapp_[A-Za-z0-9]{32}`),
+	}
+	ordinaryContent := benchmarkOpenAIChatContent(strings.Repeat("x", len(benchmarkSRIHash)))
+	protectedContent := benchmarkOpenAIChatContent(benchmarkSRIHash)
+
+	benchmarks := []struct {
+		name     string
+		redactor payloadRedactor
+		content  string
+		wantSRI  bool
+	}{
+		{
+			name:     "no_skip_regex",
+			redactor: newPayloadRedactor(f, nil),
+			content:  ordinaryContent,
+		},
+		{
+			name:     "skip_regex_no_match_2_rules",
+			redactor: newPayloadRedactor(f, patterns),
+			content:  ordinaryContent,
+		},
+		{
+			name:     "skip_regex_match_sri",
+			redactor: newPayloadRedactor(f, patterns),
+			content:  protectedContent,
+			wantSRI:  true,
+		},
+	}
+
+	for _, benchmark := range benchmarks {
+		b.Run(benchmark.name, func(b *testing.B) {
+			body := benchmarkOpenAIChatBody(benchmark.content)
+			var summary RedactSummary
+			got := benchmark.redactor.redactString(benchmark.content, &summary)
+			if !summary.Changed || summary.Entities != 1 {
+				b.Fatalf("unexpected redaction summary: %+v", summary)
+			}
+			if strings.Contains(got, "owner@example.com") || !strings.Contains(got, "[邮箱]") {
+				b.Fatalf("email was not redacted: %q", got)
+			}
+			if benchmark.wantSRI && !strings.Contains(got, benchmarkSRIHash) {
+				b.Fatalf("SRI hash was not protected: %q", got)
+			}
+
+			b.ReportAllocs()
+			b.SetBytes(int64(len(benchmark.content)))
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				summary = RedactSummary{}
+				got = benchmark.redactor.redactString(benchmark.content, &summary)
+			}
+			b.ReportMetric(float64(len(body)), "body_B")
+			benchmarkRedactedString = got
+		})
+	}
+}
+
+func BenchmarkSkipRegexScan(b *testing.B) {
+	sriPattern := regexp.MustCompile(`sha256-[A-Za-z0-9+/]{43}=`)
+	tokenPattern := regexp.MustCompile(`myapp_[A-Za-z0-9]{32}`)
+	ordinaryContent := benchmarkOpenAIChatContent(strings.Repeat("x", len(benchmarkSRIHash)))
+	protectedContent := benchmarkOpenAIChatContent(benchmarkSRIHash)
+
+	benchmarks := []struct {
+		name     string
+		text     string
+		patterns []*regexp.Regexp
+	}{
+		{
+			name:     "random_token_32B_no_match",
+			text:     "J7pQ2mV9xK4cN8rT6wY3aF5hL0sD1zBq",
+			patterns: []*regexp.Regexp{sriPattern},
+		},
+		{
+			name:     "openai_content_no_match",
+			text:     ordinaryContent,
+			patterns: []*regexp.Regexp{sriPattern},
+		},
+		{
+			name:     "openai_content_no_match_2_rules",
+			text:     ordinaryContent,
+			patterns: []*regexp.Regexp{sriPattern, tokenPattern},
+		},
+		{
+			name:     "openai_content_match",
+			text:     protectedContent,
+			patterns: []*regexp.Regexp{sriPattern},
+		},
+	}
+
+	for _, benchmark := range benchmarks {
+		b.Run(benchmark.name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(benchmark.text)))
+			var matches [][]int
+			for i := 0; i < b.N; i++ {
+				for _, pattern := range benchmark.patterns {
+					matches = pattern.FindAllStringSubmatchIndex(benchmark.text, -1)
+				}
+			}
+			benchmarkRegexMatches = matches
+		})
+	}
+}
+
+func benchmarkOpenAIChatContent(integrity string) string {
+	paragraph := "Review the deployment plan, summarize the tradeoffs, and explain each recommendation in plain language. " +
+		"The service validates headers, parses JSON, records metrics, and returns a concise response to the caller. " +
+		"Include failure handling, rollout steps, and a short verification checklist for the operations team.\n"
+	return strings.Repeat(paragraph, 16) +
+		"The frontend integrity value is " + integrity +
+		". Send the final review to owner@example.com after the checks complete."
+}
+
+func benchmarkOpenAIChatBody(content string) []byte {
+	body, err := json.Marshal(map[string]any{
+		"model": "gpt-4.1",
+		"messages": []map[string]string{
+			{"role": "system", "content": "You are a careful production reviewer."},
+			{"role": "user", "content": content},
+		},
+		"temperature": 0.2,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return body
 }
 
 func TestSkipRegexSkipsRedaction(t *testing.T) {
