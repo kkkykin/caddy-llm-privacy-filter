@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"regexp"
-	"sort"
 	"strings"
 )
 
@@ -25,12 +23,11 @@ type RedactSummary struct {
 }
 
 type payloadRedactor struct {
-	filter       *GitleaksFilter
-	skipPatterns []*regexp.Regexp
+	filter *GitleaksFilter
 }
 
-func newPayloadRedactor(f *GitleaksFilter, skipPatterns []*regexp.Regexp) payloadRedactor {
-	return payloadRedactor{filter: f, skipPatterns: skipPatterns}
+func newPayloadRedactor(f *GitleaksFilter) payloadRedactor {
+	return payloadRedactor{filter: f}
 }
 
 func parseAPIMode(v string) (apiMode, error) {
@@ -396,107 +393,13 @@ func (pr payloadRedactor) redactField(m map[string]any, key string, summary *Red
 }
 
 func (pr payloadRedactor) redactString(s string, summary *RedactSummary) string {
-	var protected [][2]int
-	for _, pattern := range pr.skipPatterns {
-		for _, match := range pattern.FindAllStringSubmatchIndex(s, -1) {
-			if len(match) >= 2 && match[0] >= 0 && match[0] < match[1] {
-				protected = append(protected, [2]int{match[0], match[1]})
-			}
-		}
-	}
-	if len(protected) == 0 {
-		res := pr.filter.RedactString(s)
-		if !res.Hit {
-			return s
-		}
-		summary.Changed = true
-		summary.Entities += res.Count
-		return res.Redacted
-	}
-
-	protected = mergeSpans(protected)
-	masked := []byte(s)
-	for _, span := range protected {
-		for i := span[0]; i < span[1]; i++ {
-			masked[i] = ' '
-		}
-	}
-
-	res := pr.filter.RedactString(string(masked))
+	res := pr.filter.RedactString(s)
 	if !res.Hit {
 		return s
 	}
-
-	var rebuilt strings.Builder
-	rebuilt.Grow(len(s))
-	protectedIndex := 0
-	entityIndex := 0
-	for pos := 0; pos < len(s); {
-		for protectedIndex < len(protected) && protected[protectedIndex][1] <= pos {
-			protectedIndex++
-		}
-		for entityIndex < len(res.Entities) && res.Entities[entityIndex].End <= pos {
-			entityIndex++
-		}
-
-		if protectedIndex < len(protected) && protected[protectedIndex][0] <= pos {
-			end := protected[protectedIndex][1]
-			rebuilt.WriteString(s[pos:end])
-			pos = end
-			continue
-		}
-
-		if entityIndex < len(res.Entities) && res.Entities[entityIndex].Start <= pos {
-			entity := res.Entities[entityIndex]
-			end := entity.End
-			if protectedIndex < len(protected) && protected[protectedIndex][0] < end {
-				end = protected[protectedIndex][0]
-			}
-			if end > pos {
-				rebuilt.WriteString(entity.Type)
-				pos = end
-				continue
-			}
-		}
-
-		next := len(s)
-		if protectedIndex < len(protected) && protected[protectedIndex][0] < next {
-			next = protected[protectedIndex][0]
-		}
-		if entityIndex < len(res.Entities) && res.Entities[entityIndex].Start < next {
-			next = res.Entities[entityIndex].Start
-		}
-		rebuilt.WriteString(s[pos:next])
-		pos = next
-	}
-
 	summary.Changed = true
 	summary.Entities += res.Count
-	return rebuilt.String()
-}
-
-func mergeSpans(spans [][2]int) [][2]int {
-	if len(spans) < 2 {
-		return spans
-	}
-	sort.Slice(spans, func(i, j int) bool {
-		if spans[i][0] != spans[j][0] {
-			return spans[i][0] < spans[j][0]
-		}
-		return spans[i][1] < spans[j][1]
-	})
-
-	merged := make([][2]int, 0, len(spans))
-	for _, span := range spans {
-		if len(merged) == 0 || span[0] >= merged[len(merged)-1][1] {
-			merged = append(merged, span)
-			continue
-		}
-		if span[1] > merged[len(merged)-1][1] {
-			merged[len(merged)-1][1] = span[1]
-		}
-	}
-	return merged
+	return res.Redacted
 }
 
 func isTextBlockType(t string) bool {

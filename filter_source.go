@@ -158,17 +158,30 @@ func fetchGitleaksTOML(ctx context.Context, source string) ([]byte, error) {
 }
 
 type gitleaksTOMLConfig struct {
-	Rules []gitleaksTOMLRule `toml:"rules"`
+	Rules      []gitleaksTOMLRule      `toml:"rules"`
+	Allowlists []gitleaksTOMLAllowlist `toml:"allowlists"`
 }
 
 type gitleaksTOMLRule struct {
-	ID          string   `toml:"id"`
+	ID          string                  `toml:"id"`
+	Description string                  `toml:"description"`
+	Regex       string                  `toml:"regex"`
+	Keywords    []string                `toml:"keywords"`
+	Entropy     float64                 `toml:"entropy"`
+	SecretGroup int                     `toml:"secretGroup"`
+	Tags        []string                `toml:"tags"`
+	Allowlists  []gitleaksTOMLAllowlist `toml:"allowlists"`
+}
+
+type gitleaksTOMLAllowlist struct {
 	Description string   `toml:"description"`
-	Regex       string   `toml:"regex"`
-	Keywords    []string `toml:"keywords"`
-	Entropy     float64  `toml:"entropy"`
-	SecretGroup int      `toml:"secretGroup"`
-	Tags        []string `toml:"tags"`
+	Condition   string   `toml:"condition"`
+	Commits     []string `toml:"commits"`
+	Paths       []string `toml:"paths"`
+	RegexTarget string   `toml:"regexTarget"`
+	Regexes     []string `toml:"regexes"`
+	StopWords   []string `toml:"stopwords"`
+	TargetRules []string `toml:"targetRules"`
 }
 
 func mergeGitleaksTOML(ctx context.Context, sources []string) ([]byte, error) {
@@ -184,6 +197,7 @@ func mergeGitleaksTOML(ctx context.Context, sources []string) ([]byte, error) {
 			return nil, fmt.Errorf("decode gitleaks_toml %q: %w", source, err)
 		}
 		merged.Rules = append(merged.Rules, cfg.Rules...)
+		merged.Allowlists = append(merged.Allowlists, cfg.Allowlists...)
 	}
 
 	var buf bytes.Buffer

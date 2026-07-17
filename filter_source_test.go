@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -50,6 +51,30 @@ func TestLoadPrivacyFilterMergesSources(t *testing.T) {
 	}
 	if res := filter.RedactString("value SECONDSECRET123"); !res.Hit {
 		t.Fatalf("expected second rule to redact, got %+v", res)
+	}
+}
+
+func TestLoadPrivacyFilterMergesAllowlists(t *testing.T) {
+	dir := t.TempDir()
+	rules := filepath.Join(dir, "rules.toml")
+	allowlist := filepath.Join(dir, "allowlist.toml")
+	if err := os.WriteFile(rules, []byte(gitleaksRuleTOML("internal-token", "INTERNAL_[A-Z0-9]{16}", "INTERNAL_")), 0o600); err != nil {
+		t.Fatalf("write rules toml: %v", err)
+	}
+	if err := os.WriteFile(allowlist, []byte(`
+[[allowlists]]
+regexes = ['''^INTERNAL_ALLOWLISTED$''']
+`), 0o600); err != nil {
+		t.Fatalf("write allowlist toml: %v", err)
+	}
+
+	filter, err := loadPrivacyFilterSources(context.Background(), []string{rules, allowlist})
+	if err != nil {
+		t.Fatalf("load privacy filter sources: %v", err)
+	}
+	result := filter.RedactString("INTERNAL_ALLOWLISTED INTERNAL_1234567890ABCDEF")
+	if !strings.Contains(result.Redacted, "INTERNAL_ALLOWLISTED") || strings.Contains(result.Redacted, "INTERNAL_1234567890ABCDEF") {
+		t.Fatalf("merged allowlist result = %q", result.Redacted)
 	}
 }
 

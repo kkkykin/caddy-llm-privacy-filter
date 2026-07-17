@@ -79,3 +79,92 @@ func TestGitleaksFilterCustomRuleExtendsDefaults(t *testing.T) {
 		t.Fatalf("custom/default rules were not both applied: %q", result.Redacted)
 	}
 }
+
+func TestGitleaksFilterGlobalAllowlistRegex(t *testing.T) {
+	toml := []byte(`
+[[rules]]
+id = "internal-token"
+regex = '''INTERNAL_[A-Z0-9]{16}'''
+keywords = ["INTERNAL_"]
+
+[[allowlists]]
+regexes = ['''^INTERNAL_ALLOWLISTED$''']
+`)
+	filter, err := NewGitleaksFilter(toml)
+	if err != nil {
+		t.Fatalf("new gitleaks filter: %v", err)
+	}
+	result := filter.RedactString("INTERNAL_ALLOWLISTED INTERNAL_1234567890ABCDEF owner@example.com")
+	if !strings.Contains(result.Redacted, "INTERNAL_ALLOWLISTED") {
+		t.Fatalf("global allowlist did not preserve token: %q", result.Redacted)
+	}
+	if strings.Contains(result.Redacted, "INTERNAL_1234567890ABCDEF") || strings.Contains(result.Redacted, "owner@example.com") {
+		t.Fatalf("non-allowlisted findings were not redacted: %q", result.Redacted)
+	}
+}
+
+func TestGitleaksFilterPerRuleAllowlistRegex(t *testing.T) {
+	toml := []byte(`
+[[rules]]
+id = "internal-token"
+regex = '''INTERNAL_[A-Z0-9]{16}'''
+keywords = ["INTERNAL_"]
+
+    [[rules.allowlists]]
+    regexes = ['''^INTERNAL_ALLOWLISTED$''']
+`)
+	filter, err := NewGitleaksFilter(toml)
+	if err != nil {
+		t.Fatalf("new gitleaks filter: %v", err)
+	}
+	result := filter.RedactString("INTERNAL_ALLOWLISTED INTERNAL_1234567890ABCDEF")
+	if !strings.Contains(result.Redacted, "INTERNAL_ALLOWLISTED") || strings.Contains(result.Redacted, "INTERNAL_1234567890ABCDEF") {
+		t.Fatalf("per-rule allowlist result = %q", result.Redacted)
+	}
+}
+
+func TestGitleaksFilterTargetedGlobalAllowlistForBuiltinRule(t *testing.T) {
+	toml := []byte(`
+[[allowlists]]
+targetRules = ["pii-email"]
+regexes = ['''^allowed@example[.]com$''']
+`)
+	filter, err := NewGitleaksFilter(toml)
+	if err != nil {
+		t.Fatalf("new gitleaks filter: %v", err)
+	}
+	result := filter.RedactString("allowed@example.com blocked@example.com")
+	if !strings.Contains(result.Redacted, "allowed@example.com") || strings.Contains(result.Redacted, "blocked@example.com") {
+		t.Fatalf("targeted global allowlist result = %q", result.Redacted)
+	}
+}
+
+func TestGitleaksFilterAllowlistStopword(t *testing.T) {
+	toml := []byte(`
+[[rules]]
+id = "internal-token"
+regex = '''TOKEN_[A-Z0-9]{16}'''
+
+    [[rules.allowlists]]
+    stopwords = ["allow"]
+`)
+	filter, err := NewGitleaksFilter(toml)
+	if err != nil {
+		t.Fatalf("new gitleaks filter: %v", err)
+	}
+	result := filter.RedactString("TOKEN_ALLOW12345678901 TOKEN_BLOCK12345678901")
+	if !strings.Contains(result.Redacted, "TOKEN_ALLOW12345678901") || strings.Contains(result.Redacted, "TOKEN_BLOCK12345678901") {
+		t.Fatalf("stopword allowlist result = %q", result.Redacted)
+	}
+}
+
+func TestGitleaksFilterRejectsUnknownAllowlistTargetRule(t *testing.T) {
+	_, err := NewGitleaksFilter([]byte(`
+[[allowlists]]
+targetRules = ["missing-rule"]
+regexes = ['''allowed''']
+`))
+	if err == nil || !strings.Contains(err.Error(), "missing-rule") {
+		t.Fatalf("expected unknown target rule error, got %v", err)
+	}
+}

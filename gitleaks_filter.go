@@ -10,6 +10,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/zricethezav/gitleaks/v8/config"
 	"github.com/zricethezav/gitleaks/v8/detect"
+	gitleaksregexp "github.com/zricethezav/gitleaks/v8/regexp"
 	"github.com/zricethezav/gitleaks/v8/report"
 )
 
@@ -349,8 +350,8 @@ func baseGitleaksConfig() (config.Config, error) {
 }
 
 // NewGitleaksFilter creates a filter from gitleaks' embedded default rules,
-// built-in PII rules, and optional custom TOML rules. Custom rules extend the
-// defaults; an identical rule ID replaces the default entry.
+// built-in PII rules, and optional custom TOML rules and allowlists. Custom
+// rules extend the defaults; an identical rule ID replaces the default entry.
 func NewGitleaksFilter(tomlBytes []byte) (*GitleaksFilter, error) {
 	cfg, err := baseGitleaksConfig()
 	if err != nil {
@@ -378,13 +379,41 @@ func NewGitleaksFilter(tomlBytes []byte) (*GitleaksFilter, error) {
 		Keywords: nil,
 	})
 	if len(tomlBytes) > 0 {
-		custom, skipped, err := parseCustomGitleaksRules(tomlBytes)
+		custom, allowlists, skipped, err := parseCustomGitleaksRules(tomlBytes)
 		if err != nil {
 			return nil, err
 		}
 		filter.skipped = skipped
 		for _, rule := range custom {
-			addConfigRule(&cfg, rule)
+			if rule.Regex != "" {
+				addConfigRule(&cfg, rule)
+			}
+		}
+		for _, rule := range custom {
+			if rule.Regex != "" {
+				continue
+			}
+			existing, ok := cfg.Rules[rule.ID]
+			if !ok {
+				filter.skipped++
+				continue
+			}
+			existing.Allowlists = append(existing.Allowlists, rule.Allowlists...)
+			cfg.Rules[rule.ID] = existing
+		}
+		for _, allowlist := range allowlists {
+			if len(allowlist.TargetRules) == 0 {
+				cfg.Allowlists = append(cfg.Allowlists, allowlist.Allowlist)
+				continue
+			}
+			for _, ruleID := range allowlist.TargetRules {
+				rule, ok := cfg.Rules[ruleID]
+				if !ok {
+					return nil, fmt.Errorf("global allowlist targets unknown rule %q", ruleID)
+				}
+				rule.Allowlists = append(rule.Allowlists, allowlist.Allowlist)
+				cfg.Rules[ruleID] = rule
+			}
 		}
 	}
 	detector := detect.NewDetector(cfg)
@@ -404,6 +433,12 @@ type configRule struct {
 	Entropy     float64
 	SecretGroup int
 	Tags        []string
+	Allowlists  []*config.Allowlist
+}
+
+type targetedAllowlist struct {
+	Allowlist   *config.Allowlist
+	TargetRules []string
 }
 
 func builtinPIIRules() []configRule {
@@ -426,6 +461,7 @@ func addConfigRule(cfg *config.Config, rule configRule) {
 		Entropy:     rule.Entropy,
 		Keywords:    lowerKeywords(rule.Keywords),
 		Tags:        append([]string(nil), rule.Tags...),
+		Allowlists:  append([]*config.Allowlist(nil), rule.Allowlists...),
 	}
 	if cfg.Keywords == nil {
 		cfg.Keywords = make(map[string]struct{})
@@ -449,21 +485,27 @@ func lowerKeywords(keywords []string) []string {
 	return out
 }
 
-func parseCustomGitleaksRules(body []byte) ([]configRule, int, error) {
+func parseCustomGitleaksRules(body []byte) ([]configRule, []targetedAllowlist, int, error) {
 	var cfg gitleaksTOMLConfig
 	if _, err := toml.Decode(string(body), &cfg); err != nil {
-		return nil, 0, fmt.Errorf("decode gitleaks rules: %w", err)
+		return nil, nil, 0, fmt.Errorf("decode gitleaks rules: %w", err)
 	}
 	rules := make([]configRule, 0, len(cfg.Rules))
 	skipped := 0
 	for _, rule := range cfg.Rules {
-		if rule.Regex == "" || rule.ID == "" {
+		if rule.ID == "" || (rule.Regex == "" && len(rule.Allowlists) == 0) {
 			skipped++
 			continue
 		}
-		if _, err := regexp.Compile(rule.Regex); err != nil {
-			skipped++
-			continue
+		if rule.Regex != "" {
+			if _, err := regexp.Compile(rule.Regex); err != nil {
+				skipped++
+				continue
+			}
+		}
+		allowlists, err := compileGitleaksAllowlists(rule.Allowlists)
+		if err != nil {
+			return nil, nil, 0, fmt.Errorf("rule %q allowlist: %w", rule.ID, err)
 		}
 		rules = append(rules, configRule{
 			ID:          rule.ID,
@@ -473,7 +515,78 @@ func parseCustomGitleaksRules(body []byte) ([]configRule, int, error) {
 			Entropy:     rule.Entropy,
 			SecretGroup: rule.SecretGroup,
 			Tags:        rule.Tags,
+			Allowlists:  allowlists,
 		})
 	}
-	return rules, skipped, nil
+	global := make([]targetedAllowlist, 0, len(cfg.Allowlists))
+	for i, raw := range cfg.Allowlists {
+		compiled, err := compileGitleaksAllowlist(raw)
+		if err != nil {
+			return nil, nil, 0, fmt.Errorf("global allowlist %d: %w", i+1, err)
+		}
+		global = append(global, targetedAllowlist{Allowlist: compiled, TargetRules: raw.TargetRules})
+	}
+	return rules, global, skipped, nil
+}
+
+func compileGitleaksAllowlists(raw []gitleaksTOMLAllowlist) ([]*config.Allowlist, error) {
+	compiled := make([]*config.Allowlist, 0, len(raw))
+	for i, allowlist := range raw {
+		a, err := compileGitleaksAllowlist(allowlist)
+		if err != nil {
+			return nil, fmt.Errorf("%d: %w", i+1, err)
+		}
+		compiled = append(compiled, a)
+	}
+	return compiled, nil
+}
+
+func compileGitleaksAllowlist(raw gitleaksTOMLAllowlist) (*config.Allowlist, error) {
+	condition := config.AllowlistMatchOr
+	switch strings.ToUpper(raw.Condition) {
+	case "", "OR", "||":
+	case "AND", "&&":
+		condition = config.AllowlistMatchAnd
+	default:
+		return nil, fmt.Errorf("unknown condition %q", raw.Condition)
+	}
+	regexTarget := raw.RegexTarget
+	switch regexTarget {
+	case "", "secret":
+		regexTarget = ""
+	case "match", "line":
+	default:
+		return nil, fmt.Errorf("unknown regexTarget %q", raw.RegexTarget)
+	}
+	compile := func(patterns []string) ([]*gitleaksregexp.Regexp, error) {
+		out := make([]*gitleaksregexp.Regexp, 0, len(patterns))
+		for _, pattern := range patterns {
+			if _, err := regexp.Compile(pattern); err != nil {
+				return nil, fmt.Errorf("invalid regex %q: %w", pattern, err)
+			}
+			out = append(out, gitleaksregexp.MustCompile(pattern))
+		}
+		return out, nil
+	}
+	regexes, err := compile(raw.Regexes)
+	if err != nil {
+		return nil, err
+	}
+	paths, err := compile(raw.Paths)
+	if err != nil {
+		return nil, err
+	}
+	allowlist := &config.Allowlist{
+		Description:    raw.Description,
+		MatchCondition: condition,
+		Commits:        append([]string(nil), raw.Commits...),
+		Paths:          paths,
+		RegexTarget:    regexTarget,
+		Regexes:        regexes,
+		StopWords:      append([]string(nil), raw.StopWords...),
+	}
+	if err := allowlist.Validate(); err != nil {
+		return nil, err
+	}
+	return allowlist, nil
 }

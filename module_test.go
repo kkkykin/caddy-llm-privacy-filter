@@ -109,8 +109,6 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 		gitleaks_toml_refresh_interval 5m
 		max_body_size 42
 		fail_open true
-		skip_regex sha256-[A-Za-z0-9+/]{43}=
-		skip_regex myapp_[A-Za-z0-9]{32}
 	}`)
 	var h Handler
 
@@ -132,10 +130,6 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 	if !h.FailOpen {
 		t.Fatal("FailOpen = false")
 	}
-	wantSkip := []string{`sha256-[A-Za-z0-9+/]{43}=`, `myapp_[A-Za-z0-9]{32}`}
-	if !reflect.DeepEqual(h.SkipRegex, wantSkip) {
-		t.Fatalf("SkipRegex = %#v, want %#v", h.SkipRegex, wantSkip)
-	}
 }
 
 func TestUnmarshalCaddyfileMultipleGitleaksTOML(t *testing.T) {
@@ -155,12 +149,5 @@ func TestUnmarshalCaddyfileMultipleGitleaksTOML(t *testing.T) {
 	}
 	if got := h.gitleaksTOMLSources(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("gitleaks sources = %#v, want %#v", got, want)
-	}
-}
-
-func TestValidateRejectsInvalidSkipRegex(t *testing.T) {
-	h := Handler{SkipRegex: []string{"["}}
-	if err := h.Validate(); err == nil {
-		t.Fatal("expected invalid skip_regex to fail validation")
 	}
 }

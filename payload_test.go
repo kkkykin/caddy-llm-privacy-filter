@@ -1,20 +1,12 @@
 package llmprivacyfilter
 
 import (
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
-	"regexp"
 	"strings"
 	"testing"
 )
 
-var (
-	benchmarkRedactedString string
-	benchmarkRegexMatches   [][]int
-)
-
-const benchmarkSRIHash = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
+var benchmarkRedactedString string
 
 func newTestRedactor(t *testing.T) payloadRedactor {
 	t.Helper()
@@ -22,7 +14,7 @@ func newTestRedactor(t *testing.T) payloadRedactor {
 	if err != nil {
 		t.Fatalf("new filter: %v", err)
 	}
-	return newPayloadRedactor(f, nil)
+	return newPayloadRedactor(f)
 }
 
 func BenchmarkRedactString(b *testing.B) {
@@ -31,120 +23,35 @@ func BenchmarkRedactString(b *testing.B) {
 		b.Fatalf("new filter: %v", err)
 	}
 
-	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`sha256-[A-Za-z0-9+/]{43}=`),
-		regexp.MustCompile(`myapp_[A-Za-z0-9]{32}`),
+	redactor := newPayloadRedactor(f)
+	content := benchmarkOpenAIChatContent()
+	body := benchmarkOpenAIChatBody(content)
+	var summary RedactSummary
+	got := redactor.redactString(content, &summary)
+	if !summary.Changed || summary.Entities != 1 {
+		b.Fatalf("unexpected redaction summary: %+v", summary)
 	}
-	ordinaryContent := benchmarkOpenAIChatContent(strings.Repeat("x", len(benchmarkSRIHash)))
-	protectedContent := benchmarkOpenAIChatContent(benchmarkSRIHash)
-
-	benchmarks := []struct {
-		name     string
-		redactor payloadRedactor
-		content  string
-		wantSRI  bool
-	}{
-		{
-			name:     "no_skip_regex",
-			redactor: newPayloadRedactor(f, nil),
-			content:  ordinaryContent,
-		},
-		{
-			name:     "skip_regex_no_match_2_rules",
-			redactor: newPayloadRedactor(f, patterns),
-			content:  ordinaryContent,
-		},
-		{
-			name:     "skip_regex_match_sri",
-			redactor: newPayloadRedactor(f, patterns),
-			content:  protectedContent,
-			wantSRI:  true,
-		},
+	if strings.Contains(got, "owner@example.com") || !strings.Contains(got, "[邮箱]") {
+		b.Fatalf("email was not redacted: %q", got)
 	}
 
-	for _, benchmark := range benchmarks {
-		b.Run(benchmark.name, func(b *testing.B) {
-			body := benchmarkOpenAIChatBody(benchmark.content)
-			var summary RedactSummary
-			got := benchmark.redactor.redactString(benchmark.content, &summary)
-			if !summary.Changed || summary.Entities != 1 {
-				b.Fatalf("unexpected redaction summary: %+v", summary)
-			}
-			if strings.Contains(got, "owner@example.com") || !strings.Contains(got, "[邮箱]") {
-				b.Fatalf("email was not redacted: %q", got)
-			}
-			if benchmark.wantSRI && !strings.Contains(got, benchmarkSRIHash) {
-				b.Fatalf("SRI hash was not protected: %q", got)
-			}
-
-			b.ReportAllocs()
-			b.SetBytes(int64(len(benchmark.content)))
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				summary = RedactSummary{}
-				got = benchmark.redactor.redactString(benchmark.content, &summary)
-			}
-			b.ReportMetric(float64(len(body)), "body_B")
-			benchmarkRedactedString = got
-		})
+	b.ReportAllocs()
+	b.SetBytes(int64(len(content)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		summary = RedactSummary{}
+		got = redactor.redactString(content, &summary)
 	}
+	b.ReportMetric(float64(len(body)), "body_B")
+	benchmarkRedactedString = got
 }
 
-func BenchmarkSkipRegexScan(b *testing.B) {
-	sriPattern := regexp.MustCompile(`sha256-[A-Za-z0-9+/]{43}=`)
-	tokenPattern := regexp.MustCompile(`myapp_[A-Za-z0-9]{32}`)
-	ordinaryContent := benchmarkOpenAIChatContent(strings.Repeat("x", len(benchmarkSRIHash)))
-	protectedContent := benchmarkOpenAIChatContent(benchmarkSRIHash)
-
-	benchmarks := []struct {
-		name     string
-		text     string
-		patterns []*regexp.Regexp
-	}{
-		{
-			name:     "random_token_32B_no_match",
-			text:     "J7pQ2mV9xK4cN8rT6wY3aF5hL0sD1zBq",
-			patterns: []*regexp.Regexp{sriPattern},
-		},
-		{
-			name:     "openai_content_no_match",
-			text:     ordinaryContent,
-			patterns: []*regexp.Regexp{sriPattern},
-		},
-		{
-			name:     "openai_content_no_match_2_rules",
-			text:     ordinaryContent,
-			patterns: []*regexp.Regexp{sriPattern, tokenPattern},
-		},
-		{
-			name:     "openai_content_match",
-			text:     protectedContent,
-			patterns: []*regexp.Regexp{sriPattern},
-		},
-	}
-
-	for _, benchmark := range benchmarks {
-		b.Run(benchmark.name, func(b *testing.B) {
-			b.ReportAllocs()
-			b.SetBytes(int64(len(benchmark.text)))
-			var matches [][]int
-			for i := 0; i < b.N; i++ {
-				for _, pattern := range benchmark.patterns {
-					matches = pattern.FindAllStringSubmatchIndex(benchmark.text, -1)
-				}
-			}
-			benchmarkRegexMatches = matches
-		})
-	}
-}
-
-func benchmarkOpenAIChatContent(integrity string) string {
+func benchmarkOpenAIChatContent() string {
 	paragraph := "Review the deployment plan, summarize the tradeoffs, and explain each recommendation in plain language. " +
 		"The service validates headers, parses JSON, records metrics, and returns a concise response to the caller. " +
 		"Include failure handling, rollout steps, and a short verification checklist for the operations team.\n"
 	return strings.Repeat(paragraph, 16) +
-		"The frontend integrity value is " + integrity +
-		". Send the final review to owner@example.com after the checks complete."
+		"Send the final review to owner@example.com after the checks complete."
 }
 
 func benchmarkOpenAIChatBody(content string) []byte {
@@ -160,113 +67,6 @@ func benchmarkOpenAIChatBody(content string) []byte {
 		panic(err)
 	}
 	return body
-}
-
-func TestSkipRegexSkipsRedaction(t *testing.T) {
-	f, err := NewGitleaksFilter(nil)
-	if err != nil {
-		t.Fatalf("new filter: %v", err)
-	}
-	tokenPattern := regexp.MustCompile(`myapp_[A-Za-z0-9]{32}`)
-	var token string
-	var unprotected string
-	for attempt := 0; attempt < 100; attempt++ {
-		randomBytes := make([]byte, 24)
-		if _, err := rand.Read(randomBytes); err != nil {
-			t.Fatalf("generate high-entropy token: %v", err)
-		}
-		token = "myapp_" + base64.StdEncoding.EncodeToString(randomBytes)[:32]
-		if !tokenPattern.MatchString(token) {
-			continue
-		}
-		unprotected = f.RedactString(token).Redacted
-		if unprotected == "[密钥]" {
-			break
-		}
-	}
-	if unprotected != "[密钥]" {
-		t.Fatalf("unprotected high-entropy token was not redacted as a key: %q -> %q", token, unprotected)
-	}
-
-	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`a@example[.]com`),
-		tokenPattern,
-	}
-	redactor := newPayloadRedactor(f, patterns)
-	body := []byte(`{"model":"gpt-compatible","messages":[{"role":"user","content":"keep a@example.com and ` + token + `, redact b@example.com"}]}`)
-
-	out, summary, err := redactor.RedactJSON(body, apiOpenAI)
-	if err != nil {
-		t.Fatalf("redact JSON: %v", err)
-	}
-	text := string(out)
-	if !summary.Changed || summary.Entities != 1 {
-		t.Fatalf("expected one non-protected redaction, got %+v in %s", summary, text)
-	}
-	if !strings.Contains(text, "a@example.com") || !strings.Contains(text, token) {
-		t.Fatalf("skip_regex fragments were changed: %s", text)
-	}
-	if strings.Contains(text, "b@example.com") || !strings.Contains(text, "[邮箱]") {
-		t.Fatalf("non-protected email was not redacted: %s", text)
-	}
-}
-
-func TestSkipRegexProtectsSRIHashAlongsideEmail(t *testing.T) {
-	f, err := NewGitleaksFilter(nil)
-	if err != nil {
-		t.Fatalf("new filter: %v", err)
-	}
-
-	var sri string
-	var unprotected string
-	for attempt := 0; attempt < 100; attempt++ {
-		digest := make([]byte, 32)
-		if _, err := rand.Read(digest); err != nil {
-			t.Fatalf("generate SRI digest: %v", err)
-		}
-		sri = "sha256-" + base64.StdEncoding.EncodeToString(digest)
-		unprotected = f.RedactString(sri).Redacted
-		if unprotected == "[密钥]" {
-			break
-		}
-	}
-	if unprotected != "[密钥]" {
-		t.Fatalf("unprotected SRI hash was not redacted as a key: %q", unprotected)
-	}
-
-	redactor := newPayloadRedactor(f, []*regexp.Regexp{
-		regexp.MustCompile(`sha256-[A-Za-z0-9+/]{43}=`),
-	})
-	body := []byte(`{"model":"gpt-compatible","messages":[{"role":"user","content":"` + sri + ` and owner@example.com"}]}`)
-
-	out, summary, err := redactor.RedactJSON(body, apiOpenAI)
-	if err != nil {
-		t.Fatalf("redact JSON: %v", err)
-	}
-	text := string(out)
-	if !summary.Changed || summary.Entities != 1 {
-		t.Fatalf("expected only the email to be redacted, got %+v in %s", summary, text)
-	}
-	if !strings.Contains(text, sri+" and [邮箱]") {
-		t.Fatalf("SRI hash was not preserved beside the redacted email: %s", text)
-	}
-	if strings.Contains(text, "owner@example.com") {
-		t.Fatalf("email was not redacted: %s", text)
-	}
-}
-
-func TestMergeSpans(t *testing.T) {
-	spans := [][2]int{{8, 12}, {1, 5}, {3, 9}, {12, 14}, {20, 24}, {21, 23}}
-	want := [][2]int{{1, 12}, {12, 14}, {20, 24}}
-	got := mergeSpans(spans)
-	if len(got) != len(want) {
-		t.Fatalf("mergeSpans = %#v, want %#v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("mergeSpans = %#v, want %#v", got, want)
-		}
-	}
 }
 
 func TestRedactOpenAICompatibleChat(t *testing.T) {
