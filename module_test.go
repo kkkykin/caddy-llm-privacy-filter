@@ -49,7 +49,7 @@ func TestHandlerRedactsAndForwardsBody(t *testing.T) {
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d", rr.Code)
 	}
-	if strings.Contains(next.body, "a@example.com") || !strings.Contains(next.body, "[邮箱]") {
+	if strings.Contains(next.body, "a@example.com") || !strings.Contains(next.body, "[redacted:pii-email]") {
 		t.Fatalf("body was not redacted: %s", next.body)
 	}
 }

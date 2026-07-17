@@ -21,7 +21,12 @@ func TestGitleaksFilterRedactBytes(t *testing.T) {
 			t.Fatalf("sensitive value %q remained in %q", sensitive, text)
 		}
 	}
-	for _, label := range []string{"[邮箱]", "[电话]", "[IP]", "[密钥]"} {
+	for _, label := range []string{
+		"[redacted:pii-email]",
+		"[redacted:pii-phone-cn]",
+		"[redacted:pii-ipv4]",
+		"[redacted:privacy-openai-key]",
+	} {
 		if !strings.Contains(text, label) {
 			t.Fatalf("label %q missing from %q", label, text)
 		}
@@ -42,8 +47,8 @@ func TestGitleaksFilterEntityOffsets(t *testing.T) {
 		if got := input[entity.Start:entity.End]; got != entity.Text {
 			t.Fatalf("entity range [%d:%d] = %q, want %q", entity.Start, entity.End, got, entity.Text)
 		}
-		if entity.Type != "[邮箱]" {
-			t.Fatalf("entity type = %q, want [邮箱]", entity.Type)
+		if entity.Type != "[redacted:pii-email]" {
+			t.Fatalf("entity type = %q, want [redacted:pii-email]", entity.Type)
 		}
 	}
 }
@@ -61,7 +66,7 @@ func TestGitleaksFilterPIIValidators(t *testing.T) {
 	if !strings.Contains(result.Redacted, "4111111111111112") {
 		t.Fatalf("invalid Luhn number was redacted: %q", result.Redacted)
 	}
-	if strings.Contains(result.Redacted, "4111111111111111") || !strings.Contains(result.Redacted, "[银行卡]") {
+	if strings.Contains(result.Redacted, "4111111111111111") || !strings.Contains(result.Redacted, "[redacted:pii-bank-card]") {
 		t.Fatalf("valid bank card was not redacted correctly: %q", result.Redacted)
 	}
 }
@@ -77,6 +82,11 @@ func TestGitleaksFilterCustomRuleExtendsDefaults(t *testing.T) {
 	}
 	if strings.Contains(result.Redacted, "INTERNAL_1234567890ABCDEF") || strings.Contains(result.Redacted, "owner@example.com") {
 		t.Fatalf("custom/default rules were not both applied: %q", result.Redacted)
+	}
+	for _, label := range []string{"[redacted:internal-token]", "[redacted:pii-email]"} {
+		if !strings.Contains(result.Redacted, label) {
+			t.Fatalf("label %q missing from %q", label, result.Redacted)
+		}
 	}
 }
 

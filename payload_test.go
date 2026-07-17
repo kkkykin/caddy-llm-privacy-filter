@@ -31,7 +31,7 @@ func BenchmarkRedactString(b *testing.B) {
 	if !summary.Changed || summary.Entities != 1 {
 		b.Fatalf("unexpected redaction summary: %+v", summary)
 	}
-	if strings.Contains(got, "owner@example.com") || !strings.Contains(got, "[邮箱]") {
+	if strings.Contains(got, "owner@example.com") || !strings.Contains(got, "[redacted:pii-email]") {
 		b.Fatalf("email was not redacted: %q", got)
 	}
 

@@ -13,8 +13,10 @@ Detection has two rule layers:
   Luhn-valid bank cards, and IPv4 addresses, plus compatibility rules for
   contextual passwords and high-entropy tokens
 
-Matches are replaced with typed markers such as `[邮箱]`, `[电话]`, `[IP]`,
-`[银行卡]`, or `[密钥]`.
+Matches are replaced with markers containing the exact gitleaks rule ID, using
+the format `[redacted:$rule-id]`. For example, email addresses become
+`[redacted:pii-email]` and a `generic-api-key` match becomes
+`[redacted:generic-api-key]`.
 
 Supported request shapes:
 
@@ -159,9 +161,10 @@ description = "Mainland China mobile number"
 regex = '''(?:\+?86[-\s]?)?1[3-9][0-9]{9}'''
 ```
 
-Rules may also set `keywords`, `entropy`, `secretGroup`, and `tags`. Findings
-retain the gitleaks rule ID internally; known PII IDs receive typed markers and
-other custom rules use `[密钥]`.
+Rules may also set `keywords`, `entropy`, `secretGroup`, and `tags`. Every
+finding retains its gitleaks rule ID in the replacement marker. For example, a
+custom rule with `id = "email-address"` produces
+`[redacted:email-address]`.
 
 ## Go API
 

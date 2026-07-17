@@ -66,9 +66,10 @@ func (f *GitleaksFilter) redactString(input string) RedactResult {
 			continue
 		}
 		spans = append(spans, redactSpan{
-			start: start,
-			end:   end,
-			label: labelForRule(finding.RuleID),
+			start:  start,
+			end:    end,
+			ruleID: finding.RuleID,
+			label:  redactionLabel(finding.RuleID),
 		})
 	}
 	spans = mergeRedactSpans(spans)
@@ -105,9 +106,10 @@ func (f *GitleaksFilter) Stats() (rules, skipped int) {
 }
 
 type redactSpan struct {
-	start int
-	end   int
-	label string
+	start  int
+	end    int
+	ruleID string
+	label  string
 }
 
 func mergeRedactSpans(spans []redactSpan) []redactSpan {
@@ -124,9 +126,9 @@ func mergeRedactSpans(spans []redactSpan) []redactSpan {
 		if valid[i].end != valid[j].end {
 			return valid[i].end > valid[j].end
 		}
-		// Prefer a structured PII label over the generic secret label when
-		// two rules identify the exact same range.
-		return valid[i].label != "[密钥]" && valid[j].label == "[密钥]"
+		// Prefer a structured PII rule when two rules identify the exact same
+		// range, while retaining the winning rule ID in the marker.
+		return isPIIRule(valid[i].ruleID) && !isPIIRule(valid[j].ruleID)
 	})
 	merged := make([]redactSpan, 0, len(valid))
 	lastEnd := -1
@@ -208,20 +210,20 @@ func closestOccurrence(text, needle string, approximate int) (int, bool) {
 	return best, best >= 0
 }
 
-func labelForRule(ruleID string) string {
+func redactionLabel(ruleID string) string {
+	return "[redacted:" + ruleID + "]"
+}
+
+func isPIIRule(ruleID string) bool {
 	switch strings.ToLower(ruleID) {
-	case "pii-email", "email":
-		return "[邮箱]"
-	case "pii-phone-cn", "phone", "phone-cn":
-		return "[电话]"
-	case "pii-id-card-cn", "id-card", "身份证":
-		return "[身份证]"
-	case "pii-bank-card", "bank-card":
-		return "[银行卡]"
-	case "pii-ipv4", "ip", "ipv4":
-		return "[IP]"
+	case "pii-email", "email", "email-address",
+		"pii-phone-cn", "phone", "phone-cn",
+		"pii-id-card-cn", "id-card", "身份证",
+		"pii-bank-card", "bank-card",
+		"pii-ipv4", "ip", "ipv4":
+		return true
 	default:
-		return "[密钥]"
+		return false
 	}
 }
 
