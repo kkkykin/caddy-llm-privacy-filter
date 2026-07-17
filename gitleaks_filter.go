@@ -353,6 +353,16 @@ func baseGitleaksConfig() (config.Config, error) {
 // built-in PII rules, and optional custom TOML rules and allowlists. Custom
 // rules extend the defaults; an identical rule ID replaces the default entry.
 func NewGitleaksFilter(tomlBytes []byte) (*GitleaksFilter, error) {
+	if len(tomlBytes) == 0 {
+		return NewGitleaksFilterFromSources(nil)
+	}
+	return NewGitleaksFilterFromSources([][]byte{tomlBytes})
+}
+
+// NewGitleaksFilterFromSources parses and merges TOML sources in order.
+// Later definitions replace rule fields while per-rule and global allowlists
+// are appended, matching gitleaks' config extension semantics.
+func NewGitleaksFilterFromSources(sources [][]byte) (*GitleaksFilter, error) {
 	cfg, err := baseGitleaksConfig()
 	if err != nil {
 		return nil, fmt.Errorf("load gitleaks default config: %w", err)
@@ -378,43 +388,55 @@ func NewGitleaksFilter(tomlBytes []byte) (*GitleaksFilter, error) {
 		Entropy:  4.8,
 		Keywords: nil,
 	})
-	if len(tomlBytes) > 0 {
-		custom, allowlists, skipped, err := parseCustomGitleaksRules(tomlBytes)
+	disabledRules := make(map[string]struct{})
+	var deferredRules []configRule
+	var deferredAllowlists []targetedAllowlist
+	for i, source := range sources {
+		custom, allowlists, disabled, skipped, err := parseCustomGitleaksRules(source)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("gitleaks TOML source %d: %w", i+1, err)
 		}
-		filter.skipped = skipped
+		filter.skipped += skipped
 		for _, rule := range custom {
-			if rule.Regex != "" {
-				addConfigRule(&cfg, rule)
-			}
-		}
-		for _, rule := range custom {
-			if rule.Regex != "" {
+			if rule.Regex == "" {
+				deferredRules = append(deferredRules, rule)
 				continue
 			}
-			existing, ok := cfg.Rules[rule.ID]
+			if existing, ok := cfg.Rules[rule.ID]; ok {
+				rule.Allowlists = append(append([]*config.Allowlist(nil), existing.Allowlists...), rule.Allowlists...)
+			}
+			addConfigRule(&cfg, rule)
+		}
+		deferredAllowlists = append(deferredAllowlists, allowlists...)
+		for _, ruleID := range disabled {
+			disabledRules[ruleID] = struct{}{}
+		}
+	}
+	for _, rule := range deferredRules {
+		existing, ok := cfg.Rules[rule.ID]
+		if !ok {
+			filter.skipped++
+			continue
+		}
+		existing.Allowlists = append(append([]*config.Allowlist(nil), existing.Allowlists...), rule.Allowlists...)
+		cfg.Rules[rule.ID] = existing
+	}
+	for _, allowlist := range deferredAllowlists {
+		if len(allowlist.TargetRules) == 0 {
+			cfg.Allowlists = append(cfg.Allowlists, allowlist.Allowlist)
+			continue
+		}
+		for _, ruleID := range allowlist.TargetRules {
+			rule, ok := cfg.Rules[ruleID]
 			if !ok {
-				filter.skipped++
-				continue
+				return nil, fmt.Errorf("global allowlist targets unknown rule %q", ruleID)
 			}
-			existing.Allowlists = append(existing.Allowlists, rule.Allowlists...)
-			cfg.Rules[rule.ID] = existing
+			rule.Allowlists = append(append([]*config.Allowlist(nil), rule.Allowlists...), allowlist.Allowlist)
+			cfg.Rules[ruleID] = rule
 		}
-		for _, allowlist := range allowlists {
-			if len(allowlist.TargetRules) == 0 {
-				cfg.Allowlists = append(cfg.Allowlists, allowlist.Allowlist)
-				continue
-			}
-			for _, ruleID := range allowlist.TargetRules {
-				rule, ok := cfg.Rules[ruleID]
-				if !ok {
-					return nil, fmt.Errorf("global allowlist targets unknown rule %q", ruleID)
-				}
-				rule.Allowlists = append(rule.Allowlists, allowlist.Allowlist)
-				cfg.Rules[ruleID] = rule
-			}
-		}
+	}
+	for ruleID := range disabledRules {
+		delete(cfg.Rules, ruleID)
 	}
 	detector := detect.NewDetector(cfg)
 	// Request payloads are already decoded JSON strings. Avoid gitleaks'
@@ -485,10 +507,10 @@ func lowerKeywords(keywords []string) []string {
 	return out
 }
 
-func parseCustomGitleaksRules(body []byte) ([]configRule, []targetedAllowlist, int, error) {
+func parseCustomGitleaksRules(body []byte) ([]configRule, []targetedAllowlist, []string, int, error) {
 	var cfg gitleaksTOMLConfig
 	if _, err := toml.Decode(string(body), &cfg); err != nil {
-		return nil, nil, 0, fmt.Errorf("decode gitleaks rules: %w", err)
+		return nil, nil, nil, 0, fmt.Errorf("decode gitleaks rules: %w", err)
 	}
 	rules := make([]configRule, 0, len(cfg.Rules))
 	skipped := 0
@@ -505,7 +527,7 @@ func parseCustomGitleaksRules(body []byte) ([]configRule, []targetedAllowlist, i
 		}
 		allowlists, err := compileGitleaksAllowlists(rule.Allowlists)
 		if err != nil {
-			return nil, nil, 0, fmt.Errorf("rule %q allowlist: %w", rule.ID, err)
+			return nil, nil, nil, 0, fmt.Errorf("rule %q allowlist: %w", rule.ID, err)
 		}
 		rules = append(rules, configRule{
 			ID:          rule.ID,
@@ -522,11 +544,11 @@ func parseCustomGitleaksRules(body []byte) ([]configRule, []targetedAllowlist, i
 	for i, raw := range cfg.Allowlists {
 		compiled, err := compileGitleaksAllowlist(raw)
 		if err != nil {
-			return nil, nil, 0, fmt.Errorf("global allowlist %d: %w", i+1, err)
+			return nil, nil, nil, 0, fmt.Errorf("global allowlist %d: %w", i+1, err)
 		}
 		global = append(global, targetedAllowlist{Allowlist: compiled, TargetRules: raw.TargetRules})
 	}
-	return rules, global, skipped, nil
+	return rules, global, append([]string(nil), cfg.Extend.DisabledRules...), skipped, nil
 }
 
 func compileGitleaksAllowlists(raw []gitleaksTOMLAllowlist) ([]*config.Allowlist, error) {

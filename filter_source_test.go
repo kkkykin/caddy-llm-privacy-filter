@@ -78,6 +78,106 @@ regexes = ['''^INTERNAL_ALLOWLISTED$''']
 	}
 }
 
+func TestLoadPrivacyFilterAppendsGlobalAllowlistsFromEverySource(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.toml")
+	second := filepath.Join(dir, "second.toml")
+	if err := os.WriteFile(first, []byte(`
+[[rules]]
+id = "multi-token"
+regex = '''TOKEN_[A-Z0-9]+'''
+keywords = ["TOKEN_"]
+
+[[allowlists]]
+regexes = ['''^TOKEN_PATTERNA$''']
+`), 0o600); err != nil {
+		t.Fatalf("write first toml: %v", err)
+	}
+	if err := os.WriteFile(second, []byte(`
+[[allowlists]]
+regexes = ['''^TOKEN_PATTERNB$''']
+`), 0o600); err != nil {
+		t.Fatalf("write second toml: %v", err)
+	}
+
+	filter, err := loadPrivacyFilterSources(context.Background(), []string{first, second})
+	if err != nil {
+		t.Fatalf("load privacy filter sources: %v", err)
+	}
+	result := filter.RedactString("TOKEN_PATTERNA TOKEN_PATTERNB TOKEN_BLOCKED")
+	if !strings.Contains(result.Redacted, "TOKEN_PATTERNA") || !strings.Contains(result.Redacted, "TOKEN_PATTERNB") {
+		t.Fatalf("global allowlists were not both retained: %q", result.Redacted)
+	}
+	if strings.Contains(result.Redacted, "TOKEN_BLOCKED") {
+		t.Fatalf("non-allowlisted token was not redacted: %q", result.Redacted)
+	}
+}
+
+func TestLoadPrivacyFilterAppendsPerRuleAllowlistWhenLaterRuleOverrides(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.toml")
+	second := filepath.Join(dir, "second.toml")
+	if err := os.WriteFile(first, []byte(`
+[[rules]]
+id = "overridden-token"
+regex = '''TOKEN_[A-Z]+'''
+
+    [[rules.allowlists]]
+    regexes = ['''^TOKEN_ALLOWED$''']
+`), 0o600); err != nil {
+		t.Fatalf("write first toml: %v", err)
+	}
+	if err := os.WriteFile(second, []byte(`
+[[rules]]
+id = "overridden-token"
+regex = '''TOKEN_[A-Z0-9]+'''
+`), 0o600); err != nil {
+		t.Fatalf("write second toml: %v", err)
+	}
+
+	filter, err := loadPrivacyFilterSources(context.Background(), []string{first, second})
+	if err != nil {
+		t.Fatalf("load privacy filter sources: %v", err)
+	}
+	result := filter.RedactString("TOKEN_ALLOWED TOKEN_BLOCK123")
+	if !strings.Contains(result.Redacted, "TOKEN_ALLOWED") {
+		t.Fatalf("earlier per-rule allowlist was lost: %q", result.Redacted)
+	}
+	if strings.Contains(result.Redacted, "TOKEN_BLOCK123") {
+		t.Fatalf("later rule definition did not override regex: %q", result.Redacted)
+	}
+}
+
+func TestLoadPrivacyFilterAccumulatesDisabledRulesAcrossSources(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.toml")
+	second := filepath.Join(dir, "second.toml")
+	if err := os.WriteFile(first, []byte("[extend]\ndisabledRules = [\"generic-api-key\"]\n"), 0o600); err != nil {
+		t.Fatalf("write first toml: %v", err)
+	}
+	if err := os.WriteFile(second, []byte("[extend]\ndisabledRules = [\"pii-email\"]\n"), 0o600); err != nil {
+		t.Fatalf("write second toml: %v", err)
+	}
+
+	filter, err := loadPrivacyFilterSources(context.Background(), []string{first, second})
+	if err != nil {
+		t.Fatalf("load privacy filter sources: %v", err)
+	}
+	for _, ruleID := range []string{"generic-api-key", "pii-email"} {
+		if _, ok := filter.detector.Config.Rules[ruleID]; ok {
+			t.Fatalf("disabled rule %q remains active", ruleID)
+		}
+	}
+	if _, ok := filter.detector.Config.Rules["github-pat"]; !ok {
+		t.Fatal("unrelated inherited default rule was removed")
+	}
+	for _, finding := range filter.detector.DetectString("api_key = 'abcdefghijklmnopqrstuvwxyz123456'") {
+		if finding.RuleID == "generic-api-key" {
+			t.Fatalf("disabled generic-api-key still detected: %+v", finding)
+		}
+	}
+}
+
 func TestLoadPrivacyFilterMergesURLAndLocalSource(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

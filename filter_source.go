@@ -1,7 +1,6 @@
 package llmprivacyfilter
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -11,7 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/BurntSushi/toml"
 	"go.uber.org/zap"
 )
 
@@ -123,11 +121,15 @@ func loadPrivacyFilterSources(ctx context.Context, sources []string) (*GitleaksF
 		return loadPrivacyFilter(ctx, sources[0])
 	}
 
-	body, err := mergeGitleaksTOML(ctx, sources)
-	if err != nil {
-		return nil, err
+	bodies := make([][]byte, 0, len(sources))
+	for _, source := range sources {
+		body, err := readGitleaksTOML(ctx, source)
+		if err != nil {
+			return nil, fmt.Errorf("load gitleaks_toml %q: %w", source, err)
+		}
+		bodies = append(bodies, body)
 	}
-	return newFilterFromTOMLBytes(body)
+	return NewGitleaksFilterFromSources(bodies)
 }
 
 func fetchGitleaksTOML(ctx context.Context, source string) ([]byte, error) {
@@ -160,6 +162,11 @@ func fetchGitleaksTOML(ctx context.Context, source string) ([]byte, error) {
 type gitleaksTOMLConfig struct {
 	Rules      []gitleaksTOMLRule      `toml:"rules"`
 	Allowlists []gitleaksTOMLAllowlist `toml:"allowlists"`
+	Extend     gitleaksTOMLExtend      `toml:"extend"`
+}
+
+type gitleaksTOMLExtend struct {
+	DisabledRules []string `toml:"disabledRules"`
 }
 
 type gitleaksTOMLRule struct {
@@ -182,29 +189,6 @@ type gitleaksTOMLAllowlist struct {
 	Regexes     []string `toml:"regexes"`
 	StopWords   []string `toml:"stopwords"`
 	TargetRules []string `toml:"targetRules"`
-}
-
-func mergeGitleaksTOML(ctx context.Context, sources []string) ([]byte, error) {
-	var merged gitleaksTOMLConfig
-	for _, source := range sources {
-		body, err := readGitleaksTOML(ctx, source)
-		if err != nil {
-			return nil, fmt.Errorf("load gitleaks_toml %q: %w", source, err)
-		}
-
-		var cfg gitleaksTOMLConfig
-		if _, err := toml.Decode(string(body), &cfg); err != nil {
-			return nil, fmt.Errorf("decode gitleaks_toml %q: %w", source, err)
-		}
-		merged.Rules = append(merged.Rules, cfg.Rules...)
-		merged.Allowlists = append(merged.Allowlists, cfg.Allowlists...)
-	}
-
-	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(merged); err != nil {
-		return nil, fmt.Errorf("encode merged gitleaks_toml: %w", err)
-	}
-	return buf.Bytes(), nil
 }
 
 func readGitleaksTOML(ctx context.Context, source string) ([]byte, error) {
