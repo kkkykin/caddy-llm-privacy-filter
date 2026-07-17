@@ -3,7 +3,7 @@
 Caddy v2 HTTP middleware that redacts PII and secrets from LLM JSON request
 bodies before proxying them upstream. Secret detection runs in-process through
 the maintained [gitleaks](https://github.com/gitleaks/gitleaks) Go library; no
-external filtering service or `privacyfilter` module is required.
+external filtering service is required.
 
 Detection has two rule layers:
 
@@ -61,6 +61,27 @@ When `api auto` is used, the module detects the interface from the JSON body
 shape only. Bodies that do not match OpenAI-compatible, Responses, or Anthropic
 Messages are forwarded unchanged.
 
+## Multiple TOML Sources
+
+Both `gitleaks_toml` and its `gitleaks_tomls` alias accept multiple sources.
+Sources can be local paths, HTTP(S) URLs, or a mixture of both, and may be
+provided on one line or by repeating the option:
+
+```caddyfile
+llm_privacy_filter {
+	api auto
+	gitleaks_toml /etc/caddy/base-gitleaks.toml /etc/caddy/team-gitleaks.toml
+	gitleaks_toml https://example.com/shared-gitleaks.toml
+	gitleaks_toml_refresh_interval 1h
+}
+```
+
+Sources are merged in configuration order. A later rule with the same ID
+replaces the earlier rule fields, while per-rule and global allowlists from all
+sources are appended. `disabledRules` entries from all sources are accumulated
+and applied after the merge. If any source is a URL, the merged configuration
+refreshes every hour by default; a refresh failure keeps the previous filter.
+
 ## Gitleaks Allowlists
 
 Gitleaks-native `[[allowlists]]` and `[[rules.allowlists]]` are accepted in
@@ -90,6 +111,25 @@ match; `regexes` and `stopwords` are the relevant fields. `condition`,
 `regexTarget`, and `targetRules` follow gitleaks semantics. Be careful with
 `regexTarget = "line"`: it can suppress every finding whose source line matches
 the allowlist regex.
+
+## Disabling Rules
+
+Use gitleaks' `[extend]` section to remove rules from the final merged
+configuration:
+
+```toml
+[extend]
+disabledRules = [
+  "generic-api-key",
+  "privacy-high-entropy",
+  "pii-ipv4",
+]
+```
+
+`disabledRules` accepts rule IDs from gitleaks defaults, the built-in PII and
+compatibility rules, or custom rules loaded from any configured TOML source.
+Because disabling is applied after all sources are merged, listing an ID in any
+source disables that rule in the resulting filter.
 
 ## Options
 
@@ -122,6 +162,25 @@ regex = '''(?:\+?86[-\s]?)?1[3-9][0-9]{9}'''
 Rules may also set `keywords`, `entropy`, `secretGroup`, and `tags`. Findings
 retain the gitleaks rule ID internally; known PII IDs receive typed markers and
 other custom rules use `[密钥]`.
+
+## Go API
+
+`NewGitleaksFilter` accepts TOML bytes, not a path. Pass `nil` or an empty slice
+to use the embedded gitleaks defaults and built-in PII rules, or pass one TOML
+document to extend them:
+
+```go
+filter, err := llmprivacyfilter.NewGitleaksFilter(tomlBytes)
+if err != nil {
+	return err
+}
+
+redacted, err := filter.Redact(input)
+```
+
+For multiple in-memory TOML documents, use
+`NewGitleaksFilterFromSources([][]byte{baseTOML, teamTOML})`; it uses the same
+ordered merge behavior as multiple `gitleaks_toml` sources.
 
 ## Build A Custom Caddy
 
