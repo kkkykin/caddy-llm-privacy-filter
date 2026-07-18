@@ -214,7 +214,7 @@ func TestStartFilterRefreshReplacesURLRules(t *testing.T) {
 	defer server.Close()
 
 	store := filterStore{}
-	cancel, done, err := startFilterRefresh(context.Background(), []string{server.URL}, 10*time.Millisecond, false, zap.NewNop(), store.Store)
+	cancel, done, err := startFilterRefresh(context.Background(), []string{server.URL}, 10*time.Millisecond, zap.NewNop(), store.Store)
 	if err != nil {
 		t.Fatalf("start filter refresh: %v", err)
 	}
@@ -244,39 +244,72 @@ func TestStartFilterRefreshReplacesURLRules(t *testing.T) {
 	}
 }
 
-func TestStartFilterRefreshURLFailureFallsBackWhenFailOpen(t *testing.T) {
+func TestStartFilterRefreshURLFailureStartsWithoutFilter(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer server.Close()
 
 	store := filterStore{}
-	cancel, done, err := startFilterRefresh(context.Background(), []string{server.URL}, time.Hour, true, zap.NewNop(), store.Store)
+	cancel, done, err := startFilterRefresh(context.Background(), []string{server.URL}, time.Hour, zap.NewNop(), store.Store)
 	if err != nil {
-		t.Fatalf("expected fallback to built-in rules, got error: %v", err)
+		t.Fatalf("expected startup to succeed without filter when a URL source fails, got error: %v", err)
 	}
 	defer func() {
 		cancel()
 		<-done
 	}()
 
-	if store.Load() == nil {
-		t.Fatal("expected built-in filter to be stored after fallback")
+	if store.Load() != nil {
+		t.Fatal("expected no filter to be stored after URL load failure")
 	}
 }
 
-func TestStartFilterRefreshURLFailureFailsClosed(t *testing.T) {
+func TestStartFilterRefreshURLFailureRecoversWithBackoff(t *testing.T) {
+	var hits atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
+		if hits.Add(1) < 3 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(gitleaksRuleTOML("recovered-secret", "RECOVERED[0-9]+", "RECOVERED")))
 	}))
 	defer server.Close()
 
 	store := filterStore{}
-	cancel, done, err := startFilterRefresh(context.Background(), []string{server.URL}, time.Hour, false, zap.NewNop(), store.Store)
-	if err == nil {
+	// Use a short success interval; backoff starts at 1s so recovery should land soon.
+	cancel, done, err := startFilterRefresh(context.Background(), []string{server.URL}, time.Hour, zap.NewNop(), store.Store)
+	if err != nil {
+		t.Fatalf("start filter refresh: %v", err)
+	}
+	defer func() {
 		cancel()
 		<-done
-		t.Fatal("expected startup to fail when a URL source fails and fail_open is false")
+	}()
+
+	if store.Load() != nil {
+		t.Fatal("expected no filter immediately after failed initial load")
+	}
+
+	deadline := time.After(5 * time.Second)
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for background recovery after URL failure")
+		case <-tick.C:
+			f := store.Load()
+			if f == nil {
+				continue
+			}
+			if res := f.RedactString("value RECOVERED123"); !res.Hit {
+				t.Fatalf("expected recovered rule to redact, got %+v", res)
+			}
+			return
+		}
 	}
 }
 
@@ -284,11 +317,11 @@ func TestStartFilterRefreshLocalFailureNeverDegrades(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "does-not-exist.toml")
 
 	store := filterStore{}
-	cancel, done, err := startFilterRefresh(context.Background(), []string{missing}, 0, true, zap.NewNop(), store.Store)
+	cancel, done, err := startFilterRefresh(context.Background(), []string{missing}, 0, zap.NewNop(), store.Store)
 	if err == nil {
 		cancel()
 		<-done
-		t.Fatal("expected startup to fail for a missing local source even with fail_open")
+		t.Fatal("expected startup to fail for a missing local source")
 	}
 }
 
@@ -304,11 +337,26 @@ func TestStartFilterRefreshMixedFailureNeverDegrades(t *testing.T) {
 	}
 
 	store := filterStore{}
-	cancel, done, err := startFilterRefresh(context.Background(), []string{server.URL, local}, time.Hour, true, zap.NewNop(), store.Store)
+	cancel, done, err := startFilterRefresh(context.Background(), []string{server.URL, local}, time.Hour, zap.NewNop(), store.Store)
 	if err == nil {
 		cancel()
 		<-done
-		t.Fatal("expected startup to fail for a mixed source set even with fail_open")
+		t.Fatal("expected startup to fail for a mixed source set")
+	}
+}
+
+func TestNextRefreshBackoff(t *testing.T) {
+	if got := nextRefreshBackoff(time.Second); got != 2*time.Second {
+		t.Fatalf("nextRefreshBackoff(1s) = %v, want 2s", got)
+	}
+	if got := nextRefreshBackoff(32 * time.Second); got != 60*time.Second {
+		t.Fatalf("nextRefreshBackoff(32s) = %v, want 60s", got)
+	}
+	if got := nextRefreshBackoff(60 * time.Second); got != 60*time.Second {
+		t.Fatalf("nextRefreshBackoff(60s) = %v, want 60s", got)
+	}
+	if got := nextRefreshBackoff(0); got != time.Second {
+		t.Fatalf("nextRefreshBackoff(0) = %v, want 1s", got)
 	}
 }
 

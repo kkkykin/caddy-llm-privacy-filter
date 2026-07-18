@@ -27,39 +27,42 @@ func (s *filterStore) Store(f *GitleaksFilter) {
 	s.ptr.Store(f)
 }
 
-func startFilterRefresh(ctx context.Context, sources []string, interval time.Duration, failOpen bool, logger *zap.Logger, store func(*GitleaksFilter)) (context.CancelFunc, chan struct{}, error) {
+func startFilterRefresh(ctx context.Context, sources []string, interval time.Duration, logger *zap.Logger, store func(*GitleaksFilter)) (context.CancelFunc, chan struct{}, error) {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 	sources = compactGitleaksSources(sources)
 
+	// initialLoaded tracks whether we have a usable filter after the first load.
+	// URL-only sources are allowed to start without a filter (ServeHTTP returns
+	// 500 until a background retry succeeds). Local or mixed sources still fail
+	// fast so bad paths or malformed files surface at startup.
+	initialLoaded := true
 	filter, err := loadPrivacyFilterSources(ctx, sources)
 	if err != nil {
-		// Only network (URL) sources may degrade to built-in rules, and only
-		// when fail_open is set. A local source must fail fast so a bad path or
-		// malformed file surfaces at startup instead of silently weakening the
-		// active rules. A mixed set is treated as non-degradable for the same
-		// reason: falling back would also drop the local rules.
-		if !failOpen || !allHTTPURLs(sources) {
+		if !allHTTPURLs(sources) {
 			return nil, nil, err
 		}
-		logger.Warn("failed to load gitleaks_toml from URL source(s); fail_open is set, falling back to built-in gitleaks and PII rules",
+		logger.Warn("failed to load gitleaks_toml from URL source(s); starting without filter and retrying in background",
 			append(gitleaksSourceFields(sources), zap.Error(err))...)
-		filter, err = NewGitleaksFilter(nil)
-		if err != nil {
-			return nil, nil, fmt.Errorf("fallback to built-in rules: %w", err)
-		}
+		initialLoaded = false
+	} else {
+		store(filter)
 	}
-	store(filter)
 
 	if len(sources) == 0 {
 		return stoppedRefresh()
 	}
-	if interval == 0 {
+	successInterval := interval
+	if successInterval == 0 {
 		if hasHTTPURL(sources) {
-			interval = defaultGitleaksTOMLRefreshInterval
-		} else {
+			successInterval = defaultGitleaksTOMLRefreshInterval
+		} else if initialLoaded {
+			// Local-only sources with no explicit refresh interval: load once.
 			return stoppedRefresh()
+		} else {
+			// URL load failed with no explicit interval: still need retries.
+			successInterval = defaultGitleaksTOMLRefreshInterval
 		}
 	}
 
@@ -68,18 +71,32 @@ func startFilterRefresh(ctx context.Context, sources []string, interval time.Dur
 	go func() {
 		defer close(done)
 
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
+		// After a successful load, wait successInterval between reloads.
+		// After a failed load (including the initial URL failure), retry with
+		// exponential backoff starting at defaultRefreshBackoffMin.
+		backoff := defaultRefreshBackoffMin
+		var wait time.Duration
+		if initialLoaded {
+			wait = successInterval
+		} else {
+			wait = backoff
+		}
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
 
 		for {
 			select {
 			case <-refreshCtx.Done():
 				return
-			case <-ticker.C:
+			case <-timer.C:
 				filter, err := loadPrivacyFilterSources(refreshCtx, sources)
 				if err != nil {
-					logger.Warn("failed to refresh gitleaks_toml; keeping previous gitleaks rules",
-						append(gitleaksSourceFields(sources), zap.Error(err))...)
+					logger.Warn("failed to refresh gitleaks_toml; retrying with backoff",
+						append(gitleaksSourceFields(sources),
+							zap.Duration("backoff", backoff),
+							zap.Error(err))...)
+					timer.Reset(backoff)
+					backoff = nextRefreshBackoff(backoff)
 					continue
 				}
 				store(filter)
@@ -88,11 +105,30 @@ func startFilterRefresh(ctx context.Context, sources []string, interval time.Dur
 					append(gitleaksSourceFields(sources),
 						zap.Int("rules", rules),
 						zap.Int("skipped_rules", skipped))...)
+				backoff = defaultRefreshBackoffMin
+				timer.Reset(successInterval)
 			}
 		}
 	}()
 
 	return cancel, done, nil
+}
+
+const (
+	defaultRefreshBackoffMin = time.Second
+	defaultRefreshBackoffMax = 60 * time.Second
+)
+
+// nextRefreshBackoff doubles the current backoff, capped at defaultRefreshBackoffMax.
+func nextRefreshBackoff(current time.Duration) time.Duration {
+	if current < defaultRefreshBackoffMin {
+		return defaultRefreshBackoffMin
+	}
+	next := current * 2
+	if next > defaultRefreshBackoffMax || next < current {
+		return defaultRefreshBackoffMax
+	}
+	return next
 }
 
 func stoppedRefresh() (context.CancelFunc, chan struct{}, error) {

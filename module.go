@@ -54,7 +54,11 @@ type Handler struct {
 	MaxBodySize int64 `json:"max_body_size,omitempty"`
 
 	// FailOpen passes the original request through if the body cannot be
-	// inspected. The default is fail-closed.
+	// inspected (for example: compressed body, oversized body, or JSON parse
+	// error). The default is fail-closed. FailOpen does not affect gitleaks
+	// TOML loading: URL sources that fail at startup leave the filter unset
+	// (requests get HTTP 500 until a background retry succeeds), and local
+	// sources that fail still abort Provision.
 	FailOpen bool `json:"fail_open,omitempty"`
 
 	api    apiMode
@@ -95,7 +99,6 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		context.Background(),
 		gitleaksSources,
 		time.Duration(h.GitleaksTOMLRefreshInterval),
-		h.FailOpen,
 		h.logger,
 		h.filter.Store,
 	)
@@ -123,7 +126,10 @@ func (h *Handler) Validate() error {
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	filter := h.filter.Load()
 	if filter == nil {
-		return caddyhttp.Error(http.StatusInternalServerError, errors.New("llm_privacy_filter is not provisioned"))
+		// URL gitleaks_toml sources may start without a loaded filter while
+		// background retries are in progress. Refuse the request rather than
+		// forwarding an uninspected body.
+		return caddyhttp.Error(http.StatusInternalServerError, errors.New("llm_privacy_filter rules are not available"))
 	}
 	if !shouldInspect(r) {
 		return next.ServeHTTP(w, r)

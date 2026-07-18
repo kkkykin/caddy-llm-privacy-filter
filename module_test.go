@@ -1,6 +1,7 @@
 package llmprivacyfilter
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -51,6 +52,34 @@ func TestHandlerRedactsAndForwardsBody(t *testing.T) {
 	}
 	if strings.Contains(next.body, "a@example.com") || !strings.Contains(next.body, "[redacted:pii-email]") {
 		t.Fatalf("body was not redacted: %s", next.body)
+	}
+}
+
+func TestHandlerReturns500WhenFilterUnavailable(t *testing.T) {
+	h := &Handler{
+		api:         apiAuto,
+		logger:      zap.NewNop(),
+		MaxBodySize: defaultMaxBodySize,
+	}
+	// filter intentionally left nil — simulates URL source still loading.
+	next := &captureNext{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	err := h.ServeHTTP(rr, req, caddyhttp.HandlerFunc(next.ServeHTTP))
+	if err == nil {
+		t.Fatal("expected error when filter is unavailable")
+	}
+	var handlerErr caddyhttp.HandlerError
+	if !errors.As(err, &handlerErr) {
+		t.Fatalf("expected caddyhttp.HandlerError, got %T: %v", err, err)
+	}
+	if handlerErr.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", handlerErr.StatusCode)
+	}
+	if next.body != "" {
+		t.Fatalf("next handler should not have been called, got body %q", next.body)
 	}
 }
 
