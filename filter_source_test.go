@@ -267,7 +267,9 @@ func TestStartFilterRefreshURLFailureStartsWithoutFilter(t *testing.T) {
 
 func TestStartFilterRefreshURLFailureRecoversWithBackoff(t *testing.T) {
 	var hits atomic.Int32
+	requestTimes := make(chan time.Time, 3)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestTimes <- time.Now()
 		if hits.Add(1) < 3 {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -292,13 +294,33 @@ func TestStartFilterRefreshURLFailureRecoversWithBackoff(t *testing.T) {
 		t.Fatal("expected no filter immediately after failed initial load")
 	}
 
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(6 * time.Second)
+	times := make([]time.Time, 0, 3)
+	for len(times) < 3 {
+		select {
+		case requestTime := <-requestTimes:
+			times = append(times, requestTime)
+		case <-deadline:
+			t.Fatal("timed out waiting for background recovery after URL failure")
+		}
+	}
+
+	assertBackoffInterval := func(name string, got, want time.Duration) {
+		t.Helper()
+		if got < want || got > want+time.Second {
+			t.Fatalf("%s interval = %v, want between %v and %v", name, got, want, want+time.Second)
+		}
+	}
+	assertBackoffInterval("first retry", times[1].Sub(times[0]), defaultRefreshBackoffMin)
+	assertBackoffInterval("second retry", times[2].Sub(times[1]), 2*defaultRefreshBackoffMin)
+
+	recoveryDeadline := time.After(time.Second)
 	tick := time.NewTicker(50 * time.Millisecond)
 	defer tick.Stop()
 
 	for {
 		select {
-		case <-deadline:
+		case <-recoveryDeadline:
 			t.Fatal("timed out waiting for background recovery after URL failure")
 		case <-tick.C:
 			f := store.Load()

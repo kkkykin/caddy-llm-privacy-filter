@@ -80,6 +80,9 @@ func startFilterRefresh(ctx context.Context, sources []string, interval time.Dur
 			wait = successInterval
 		} else {
 			wait = backoff
+			// The initial load already failed, so advance the backoff that will
+			// be used if the first background retry also fails.
+			backoff = nextRefreshBackoff(backoff)
 		}
 		timer := time.NewTimer(wait)
 		defer timer.Stop()
