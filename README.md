@@ -82,7 +82,11 @@ Sources are merged in configuration order. A later rule with the same ID
 replaces the earlier rule fields, while per-rule and global allowlists from all
 sources are appended. `disabledRules` entries from all sources are accumulated
 and applied after the merge. If any source is a URL, the merged configuration
-refreshes every hour by default; a refresh failure keeps the previous filter.
+refreshes every hour by default; a refresh failure keeps the previous filter
+and retries with exponential backoff (1s → 2s → … → 60s). If every configured
+source is a URL and the initial load fails, Caddy still starts: the filter is
+left unset so requests return HTTP 500 until a background retry succeeds. A
+local source (or a mixed local+URL set) that fails to load still aborts startup.
 
 ## Gitleaks Allowlists
 
@@ -140,9 +144,9 @@ source disables that rule in the resulting filter.
 | `api` | `auto` | One of `auto`, `openai`, `openai-compatible`, `responses`, `anthropic-message`. |
 | `gitleaks_toml` | empty | Optional local path or HTTP(S) URL to a gitleaks-compatible rules file. Repeat it or pass multiple paths on one line to merge rule sets. Custom rules and native allowlists extend gitleaks defaults and the built-in PII rules. |
 | `gitleaks_tomls` | empty | Array/alias form for multiple gitleaks-compatible files. Rules and allowlists are appended and matched as one filter. |
-| `gitleaks_toml_refresh_interval` | `1h` when any URL is configured, off for local-only sources | Periodically reload configured gitleaks TOML sources. Refresh failures keep the previous compiled rules. See `fail_open` for startup load-failure behavior. |
+| `gitleaks_toml_refresh_interval` | `1h` when any URL is configured, off for local-only sources | Periodically reload configured gitleaks TOML sources. After a successful load the configured interval is used; after a failure retries use exponential backoff (1s, doubling up to 60s) and reset to the normal interval on the next success. |
 | `max_body_size` | `8388608` | Largest JSON body to buffer, in bytes. Use `-1` for no explicit limit. |
-| `fail_open` | `false` | Forward the original body when filtering fails. Also governs startup load failures: when every configured `gitleaks_toml` source is a URL, `true` falls back to built-in rules and keeps serving while `false` aborts startup. A local source that fails to load always aborts startup regardless of this setting. |
+| `fail_open` | `false` | Forward the original body when request inspection fails (compressed body, oversized body, JSON parse error, etc.). Does **not** control gitleaks TOML loading: pure URL sources that fail at startup leave the filter unset (HTTP 500 until recovery), and local sources that fail always abort startup. |
 
 ## Custom PII Rules
 
